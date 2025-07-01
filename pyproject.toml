@@ -1,0 +1,36 @@
+# MIT © 2025 MSc Candidate
+[build-system]
+requires = ["setuptools>=65", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "renewable-forecasting-pipeline"
+version = "0.1.0"
+description = "End-to-end Spanish wind & PV forecasting pipeline (ERA5-Land + ESIOS)"
+authors = [{name = "MSc Candidate", email = "author@example.com"}]
+license = {text = "MIT"}
+requires-python = ">=3.9"
+
+dependencies = [
+    "pandas>=2.2",
+    "numpy>=1.26",
+    "python-dotenv>=1.0",
+    "requests>=2.32",
+    "cdsapi>=0.6",
+    "xgboost>=2.0",
+    "scikit-learn>=1.4",
+    "optuna>=3.6",
+    "joblib>=1.4",
+    "matplotlib>=3.9",
+    "pyyaml>=6.0",
+    "ruff>=0.4",
+    "tqdm>=4.66",
+    "xarray>=2024.2",
+    "netCDF4>=1.6",
+    "scipy>=1.13"
+]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 88
+select = ["E", "F", "I", "UP", "B"]
