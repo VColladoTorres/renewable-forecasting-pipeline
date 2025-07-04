@@ -3,12 +3,13 @@
 """
 Cliente robusto para ERA5/ERA5-Land (Copernicus CDS).
 
-• Descarga mensual con caché             • Acepta lista o dict de variables
-• Endpoint actualizado 2025-06           • Guarda en data/raw/cds/<var>/<YYYY-MM>.nc
+• Sub-conjunto geográfico (area/grid)               • Descarga mensual con caché
+• Endpoint 2025-06 (https://…/api)                  • Guarda en data/raw/cds/<var>/<YYYY-MM>.nc
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from datetime import datetime
@@ -17,30 +18,33 @@ from typing import Dict, List, Sequence
 
 import cdsapi
 import pandas as pd
+from dotenv import load_dotenv            # carga .env (ESIOS_TOKEN, etc.)
+
+load_dotenv()
 
 _LOGGER = logging.getLogger(__name__)
 
 
 class CDSClient:
-    """Wrapper cdsapi con caché mensual en disco."""
+    """Wrapper cdsapi con caché mensual en disco y soporte de área + grid."""
 
     def __init__(
         self,
         out_dir: Path | str = Path("data/raw/cds"),
         key: str | None = None,
+        timeout: int = 3000,
     ) -> None:
         self._home = Path(out_dir).expanduser()
         self._home.mkdir(parents=True, exist_ok=True)
 
-        key = key or os.getenv("CDS_API_KEY")
-        if not key:
-            raise ValueError("Falta CDS_API_KEY (.env o argumento)")
+        # ───── credenciales ──────────────────────────────────────────────
+        key = key or os.getenv("CDS_API_KEY")        # opcional; ~/.cdsapirc es preferente
+        if key:                                      # si se pasa, sobre-escribe el entorno
+            os.environ["CDSAPI_URL"] = "https://cds.climate.copernicus.eu/api"
+            os.environ["CDSAPI_KEY"] = key
+        # ─────────────────────────────────────────────────────────────────
 
-        # ─── endpoint CORRECTO (sin /api/v2) ───
-        os.environ["CDSAPI_URL"] = "https://cds.climate.copernicus.eu/api"
-        os.environ["CDSAPI_KEY"] = key
-
-        self._c = cdsapi.Client(timeout=3000)
+        self._c = cdsapi.Client(timeout=timeout)
 
     # ------------------------------------------------------------------
     def download(
@@ -49,7 +53,7 @@ class CDSClient:
         start: datetime,
         end: datetime,
     ) -> List[Path]:
-        """Descarga una o varias variables ERA5."""
+        """Descarga una o varias variables ERA5/ERA5-Land según la lista cfg."""
         cfgs = cfg if isinstance(cfg, list) else [cfg]
         paths: list[Path] = []
         for spec in cfgs:
@@ -74,16 +78,32 @@ class CDSClient:
             _LOGGER.info("ERA5 %s %s – descarga…", spec["name"], ym)
             fn.parent.mkdir(parents=True, exist_ok=True)
 
+            # --------------------- request base -------------------------
             req = {
                 "product_type": "reanalysis",
-                "format": "netcdf",
-                "variable": spec["short_name"],
-                "year": year,
-                "month": month,
-                "day": [f"{d:02d}" for d in range(1, 32)],
-                "time": [f"{h:02d}:00" for h in range(24)],
-            } | spec.get("extras", {})
+                "variable":     spec["short_name"],
+                "year":         year,
+                "month":        month,
+                "day":          [f"{d:02d}" for d in range(1, 32)],
+                "time":         [f"{h:02d}:00" for h in range(24)],
+                "format":       spec.get("data_format", "netcdf"),  # default netcdf
+            }
+            # ------------------- área / grid opcionales ----------------
+            for k in ("area", "grid"):
+                if k in spec:
+                    val = spec[k]
+                    # API espera string "N/W/S/E" o "0.25/0.25"
+                    if isinstance(val, (list, tuple)):
+                        req[k] = "/".join(str(x) for x in val)
+                    else:
+                        req[k] = val
+            # ------------------- extras arbitrarios --------------------
+            req |= spec.get("extras", {})
 
+            # LOG de depuración
+            _LOGGER.debug("REQUEST JSON →\n%s", json.dumps(req, indent=2))
+
+            # ------------------- descarga ------------------------------
             self._c.retrieve(spec["dataset"], req, str(fn))
             out_files.append(fn)
 
@@ -91,7 +111,7 @@ class CDSClient:
 
 
 def _month_stubs(start: datetime, end: datetime) -> list[str]:
-    """['YYYY-MM', …] para cada mes entre start y end (incl.)."""
+    """Devuelve ['YYYY-MM', …] para cada mes de start a end (incl.)."""
     start = start.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     end = end.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
@@ -99,5 +119,5 @@ def _month_stubs(start: datetime, end: datetime) -> list[str]:
     cur = start
     while cur <= end:
         months.append(cur.strftime("%Y-%m"))
-        cur = (cur.replace(day=28) + pd.Timedelta(days=4)).replace(day=1)
+        cur = (cur.replace(day=28) + pd.Timedelta(days=4)).replace(day=1)  # +1 mes
     return months

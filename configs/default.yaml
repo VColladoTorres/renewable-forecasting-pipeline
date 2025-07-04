@@ -1,30 +1,42 @@
+# ----------------- default.yaml (versión recortada 0.25° Iberia) -----------------
 paths:
-  raw_dir: data/raw
-  interim_dir: data/interim
+  raw_dir:       data/raw
+  interim_dir:   data/interim
   processed_dir: data/processed
-  models: models
+  models:        models
   feature_table: data/processed/features.parquet
 
 data:
-  start_date: "2024-01-01T00:00:00Z"
-  end_date:   "2025-06-24T23:00:00Z"
+  # rango temporal que se descargará
+  start_date: "2018-01-01T00:00:00Z"
+  end_date:   "2025-06-30T23:00:00Z"
 
-
+# -------------------------------------------------------------------------------
+# cada entrada ERA5 incluye ahora el sub-conjunto geográfico y la resolución
+# N, W, S, E  → Península + Baleares; cámbialo o duplica bloques para Canarias
+# -------------------------------------------------------------------------------
 variables:
   era5:
-    - dataset: reanalysis-era5-single-levels     # ← donde vive el GHI
+    - dataset: reanalysis-era5-single-levels          # GHI
       name: ghi
       short_name: surface_solar_radiation_downwards
+      area: [46, -10, 27, 4]           # N W S E  (º)
+      grid: [0.25, 0.25]               # 0.25° ≈ 28 km
+      data_format: netcdf
 
-    - dataset: reanalysis-era5-land              # t2m sí está en ERA5-Land
+    - dataset: reanalysis-era5-land                  # T2M
       name: t2m
       short_name: 2m_temperature
+      area: [46, -10, 27, 4]
+      grid: [0.25, 0.25]
+      data_format: netcdf
 
-    - dataset: reanalysis-era5-land              # u10 también
+    - dataset: reanalysis-era5-land                  # U10
       name: u10
       short_name: 10m_u_component_of_wind
-
-
+      area: [46, -10, 27, 4]
+      grid: [0.25, 0.25]
+      data_format: netcdf
 
 feature_engineering:
   lags: [1, 2, 3, 6, 12, 24, 48]

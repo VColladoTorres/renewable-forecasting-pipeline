@@ -1,3 +1,23 @@
+#######################################
+# Carpetas de datos y modelos pesados #
+#######################################
+data/
+models/
+*.nc              # cualquier NetCDF individual
+
+#####################
+# Entornos locales  #
+#####################
+.venv/
+__pycache__/
+
+#####################
+# Archivos de editor#
+#####################
+*.swp
+*.swo
+.ipynb_checkpoints/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
