@@ -1,4 +1,4 @@
-# ----------------- default.yaml (versión recortada 0.25° Iberia) -----------------
+# ----------------- default.yaml  ·  Iberia 0.25° -----------------
 paths:
   raw_dir:       data/raw
   interim_dir:   data/interim
@@ -7,33 +7,42 @@ paths:
   feature_table: data/processed/features.parquet
 
 data:
-  # rango temporal que se descargará
   start_date: "2018-01-01T00:00:00Z"
   end_date:   "2025-06-30T23:00:00Z"
 
-# -------------------------------------------------------------------------------
-# cada entrada ERA5 incluye ahora el sub-conjunto geográfico y la resolución
-# N, W, S, E  → Península + Baleares; cámbialo o duplica bloques para Canarias
-# -------------------------------------------------------------------------------
+  # ── NUEVO: cortes para train / val / test ────────────────────────
+  split_dates:
+    train_end: "2023-12-31T23:00:00Z"   # …inclusive → último instante de TRAIN
+    val_end:   "2024-06-30T23:00:00Z"   # …inclusive → último instante de VAL
+    # lo que quede hasta end_date será TEST
+  # ────────────────────────────────────────────────────────────────
+
 variables:
   era5:
-    - dataset: reanalysis-era5-single-levels          # GHI
+    - dataset: reanalysis-era5-single-levels
       name: ghi
       short_name: surface_solar_radiation_downwards
-      area: [46, -10, 27, 4]           # N W S E  (º)
-      grid: [0.25, 0.25]               # 0.25° ≈ 28 km
+      area: [46, -10, 27, 4]
+      grid: [0.25, 0.25]
       data_format: netcdf
 
-    - dataset: reanalysis-era5-land                  # T2M
+    - dataset: reanalysis-era5-single-levels
       name: t2m
       short_name: 2m_temperature
       area: [46, -10, 27, 4]
       grid: [0.25, 0.25]
       data_format: netcdf
 
-    - dataset: reanalysis-era5-land                  # U10
+    - dataset: reanalysis-era5-single-levels
       name: u10
       short_name: 10m_u_component_of_wind
+      area: [46, -10, 27, 4]
+      grid: [0.25, 0.25]
+      data_format: netcdf
+
+    - dataset: reanalysis-era5-single-levels
+      name: v10
+      short_name: 10m_v_component_of_wind
       area: [46, -10, 27, 4]
       grid: [0.25, 0.25]
       data_format: netcdf
@@ -44,3 +53,7 @@ feature_engineering:
 
 optuna:
   n_trials: 50
+
+model:
+  # variables que quieres predecir
+  targets: ["wind", "solar_pv", "demand"]

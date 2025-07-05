@@ -1,14 +1,15 @@
 # src/data/cds_client.py
 # MIT © 2025 MSc Candidate
 """
-Cliente robusto para ERA5/ERA5-Land (Copernicus CDS).
+Cliente robusto para ERA5 / ERA5-Land (Copernicus CDS).
 
-• Sub-conjunto geográfico (area/grid)               • Descarga mensual con caché
-• Endpoint 2025-06 (https://…/api)                  • Guarda en data/raw/cds/<var>/<YYYY-MM>.nc
+• Sub-conjunto geográfico (area / grid)                • Caché mensual en disco
+• Validación rápida de cada NetCDF                    • Salida → data/raw/cds/<var>/<YYYY-MM>.nc
 """
 
 from __future__ import annotations
 
+import calendar
 import json
 import logging
 import os
@@ -18,15 +19,16 @@ from typing import Dict, List, Sequence
 
 import cdsapi
 import pandas as pd
-from dotenv import load_dotenv            # carga .env (ESIOS_TOKEN, etc.)
+import xarray as xr
+from dotenv import load_dotenv
+from requests import HTTPError
 
 load_dotenv()
-
 _LOGGER = logging.getLogger(__name__)
 
 
 class CDSClient:
-    """Wrapper cdsapi con caché mensual en disco y soporte de área + grid."""
+    """Wrapper cdsapi con caché, área y grid."""
 
     def __init__(
         self,
@@ -37,32 +39,34 @@ class CDSClient:
         self._home = Path(out_dir).expanduser()
         self._home.mkdir(parents=True, exist_ok=True)
 
-        # ───── credenciales ──────────────────────────────────────────────
-        key = key or os.getenv("CDS_API_KEY")        # opcional; ~/.cdsapirc es preferente
-        if key:                                      # si se pasa, sobre-escribe el entorno
+        # ─── credenciales ────────────────────────────────────────────
+        key = key or os.getenv("CDS_API_KEY")          # ~/.cdsapirc preferente
+        if key:
             os.environ["CDSAPI_URL"] = "https://cds.climate.copernicus.eu/api"
             os.environ["CDSAPI_KEY"] = key
-        # ─────────────────────────────────────────────────────────────────
+        # ─────────────────────────────────────────────────────────────
 
         self._c = cdsapi.Client(timeout=timeout)
 
-    # ------------------------------------------------------------------
+    # =================================================================
     def download(
         self,
         cfg: Dict[str, str] | Sequence[Dict[str, str]],
         start: datetime,
         end: datetime,
     ) -> List[Path]:
-        """Descarga una o varias variables ERA5/ERA5-Land según la lista cfg."""
         cfgs = cfg if isinstance(cfg, list) else [cfg]
         paths: list[Path] = []
         for spec in cfgs:
             paths.extend(self._download_one(spec, start, end))
         return paths
 
-    # ------------------ internals ------------------
+    # --------------------------- interno -----------------------------
     def _download_one(
-        self, spec: Dict[str, str], start: datetime, end: datetime
+        self,
+        spec: Dict[str, str],
+        start: datetime,
+        end: datetime,
     ) -> List[Path]:
         months = _month_stubs(start, end)
         out_files: list[Path] = []
@@ -70,6 +74,7 @@ class CDSClient:
         for ym in months:
             year, month = ym.split("-")
             fn = self._home / spec["name"] / f"{ym}.nc"
+
             if fn.exists():
                 _LOGGER.info("✓ %s existe – omitido", fn.name)
                 out_files.append(fn)
@@ -78,42 +83,60 @@ class CDSClient:
             _LOGGER.info("ERA5 %s %s – descarga…", spec["name"], ym)
             fn.parent.mkdir(parents=True, exist_ok=True)
 
-            # --------------------- request base -------------------------
+            # ----------- request ------------------------------------
+            n_days = calendar.monthrange(int(year), int(month))[1]
             req = {
                 "product_type": "reanalysis",
-                "variable":     spec["short_name"],
-                "year":         year,
-                "month":        month,
-                "day":          [f"{d:02d}" for d in range(1, 32)],
-                "time":         [f"{h:02d}:00" for h in range(24)],
-                "format":       spec.get("data_format", "netcdf"),  # default netcdf
+                "variable": [spec["short_name"]],
+                "year": year,
+                "month": month,
+                "day": [f"{d:02d}" for d in range(1, n_days + 1)],
+                "time": [f"{h:02d}:00" for h in range(24)],
+                "format": "netcdf",
             }
-            # ------------------- área / grid opcionales ----------------
+
             for k in ("area", "grid"):
                 if k in spec:
                     val = spec[k]
-                    # API espera string "N/W/S/E" o "0.25/0.25"
-                    if isinstance(val, (list, tuple)):
-                        req[k] = "/".join(str(x) for x in val)
-                    else:
-                        req[k] = val
-            # ------------------- extras arbitrarios --------------------
-            req |= spec.get("extras", {})
+                    req[k] = "/".join(map(str, val)) if isinstance(val, (list, tuple)) else val
 
-            # LOG de depuración
+            req |= spec.get("extras", {})
             _LOGGER.debug("REQUEST JSON →\n%s", json.dumps(req, indent=2))
 
-            # ------------------- descarga ------------------------------
-            self._c.retrieve(spec["dataset"], req, str(fn))
+            # ------------------ descarga con manejo de errores ------------------
+            try:
+                self._c.retrieve(spec["dataset"], req, str(fn))
+            except HTTPError as e:
+                # El cuerpo del 400 suele traer la clave 'error' con detalle
+                _LOGGER.error("CDS 400 Bad Request (%s):\n%s", spec["name"], e.response.text)
+                raise
+
+            # ------------------ validación rápida ------------------------------
+            if not _is_netcdf_ok(fn):
+                _LOGGER.warning("%s corrupto → reintento 1/1", fn.name)
+                fn.unlink(missing_ok=True)
+                self._c.retrieve(spec["dataset"], req, str(fn))
+                if not _is_netcdf_ok(fn):
+                    raise RuntimeError(f"NetCDF corrupto tras reintento: {fn}")
+
             out_files.append(fn)
 
         return out_files
 
 
+# =====================================================================
+def _is_netcdf_ok(path: Path) -> bool:
+    try:
+        xr.open_dataset(path, engine="h5netcdf").close()
+        return True
+    except Exception as exc:
+        _LOGGER.error("NetCDF inválido (%s): %s", path.name, exc)
+        return False
+
+
 def _month_stubs(start: datetime, end: datetime) -> list[str]:
-    """Devuelve ['YYYY-MM', …] para cada mes de start a end (incl.)."""
     start = start.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    end = end.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    end   = end.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
     months: list[str] = []
     cur = start
