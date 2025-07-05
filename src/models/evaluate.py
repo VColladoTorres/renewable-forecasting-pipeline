@@ -1,13 +1,13 @@
-
-# MIT License
-# Copyright (c) 2025 MSc Candidate
-#
-# Permission is hereby granted, free of charge, to any person obtaining a copy …
+# src/models/evaluate.py
 """
-Evaluate trained model and create diagnostic plot.
+Evalúa los modelos entrenados (uno por target) y genera:
+  ▸ métricas MAE / RMSE / R²
+  ▸ gráfico obs-vs-pred en PNG
 
-Run:
-    python -m src.models.evaluate --config configs/default.yaml
+Uso:
+    python -m src.models.evaluate \
+           --config configs/default.yaml \
+           --run    xgb_YYYYMMDD_HHMM
 """
 from __future__ import annotations
 
@@ -15,51 +15,82 @@ import argparse
 import logging
 from pathlib import Path
 
+# ── ciencia de datos ──────────────────────────────────────────────────
 import joblib
+import matplotlib
+
+matplotlib.use("Agg")                     # backend sin GUI
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import yaml
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.metrics import (
+    mean_absolute_error,
+    mean_squared_error,
+    r2_score,
+)
 
+# ── utilidades propias ────────────────────────────────────────────────
 from src.utils.logger import init_logger
+from src.utils.yaml_cfg import load
 
 init_logger()
-_LOGGER = logging.getLogger(__name__)
+_LOG = logging.getLogger(__name__)
 
 
-def main(config: str) -> None:  # noqa: D401
-    with open(config) as f:
-        cfg = yaml.safe_load(f)
+# ──────────────────────────────────────────────────────────────────────
+def eval_target(run_dir: Path, df_test: pd.DataFrame, target: str, feats: list[str]) -> None:
+    """Carga modelo + scaler, calcula métricas y guarda gráfico."""
+    model = joblib.load(run_dir / target / "model.joblib")
+    scaler = joblib.load(run_dir / target / "scaler.joblib")
 
-    df = pd.read_parquet(cfg["paths"]["feature_table"])
-    test = df[df["split"] == "test"]
+    # ── elimina filas con NaN en target o features ────────────────────
+    subset = feats + [target]
+    df_ok = df_test.dropna(subset=subset)
 
-    model = joblib.load(Path(cfg["paths"]["models"]) / "xgb_model.joblib")
-    scaler = joblib.load(Path(cfg["paths"]["models"]) / "scaler.joblib")
-    feats = [c for c in test.columns if c not in ("mw", "split")]
-    X_test = scaler.transform(test[feats])
-    y_true = test["mw"].values
-    y_pred = model.predict(X_test)
+    X = scaler.transform(df_ok[feats])
+    y_true = df_ok[target].values.astype(float)
+    y_pred = model.predict(X).astype(float)
 
+    # métricas
     mae = mean_absolute_error(y_true, y_pred)
-    rmse = mean_squared_error(y_true, y_pred, squared=False)
-    nmae = mae / y_true.max()
+    rmse = mean_squared_error(y_true, y_pred) ** 0.5   # √MSE
     r2 = r2_score(y_true, y_pred)
-    _LOGGER.info("Test MAE %.2f | RMSE %.2f | nMAE %.2f | R² %.3f", mae, rmse, nmae, r2)
 
-    # plot
-    plt.figure(figsize=(10, 4))
-    plt.plot(test.index, y_true, label="obs")
-    plt.plot(test.index, y_pred, label="pred")
+    _LOG.info("%s → MAE %.2f | RMSE %.2f | R² %.3f",
+              target.upper(), mae, rmse, r2)
+
+    # ── gráfico obs vs pred ───────────────────────────────────────────
+    plt.figure(figsize=(10, 3))
+    plt.plot(df_ok.index, y_true, lw=1, label="obs")
+    plt.plot(df_ok.index, y_pred, lw=1, label="pred")
     plt.legend()
-    plt.title("XGB – observed vs predicted")
-    out_png = Path(cfg["paths"]["models"]) / "prediction_vs_obs.png"
-    plt.savefig(out_png, dpi=150, bbox_inches="tight")
-    _LOGGER.info("Plot saved to %s", out_png)
+    plt.title(f"{target.upper()} – obs vs pred")
+    plt.tight_layout()
+    plt.savefig(run_dir / target / "pred_vs_obs.png", dpi=150)
+    plt.close()
 
 
+# ──────────────────────────────────────────────────────────────────────
+def main(config: str, run: str) -> None:
+    cfg = load(config)
+    df = pd.read_parquet(cfg["paths"]["feature_table"])
+    test = df.query("split == 'test'")
+
+    # mismas columnas predictoras usadas en entrenamiento
+    feats = [c for c in df.columns if c not in (*cfg["model"]["targets"], "split")]
+
+    run_dir = Path(cfg["paths"]["models"]) / run
+    if not run_dir.exists():
+        raise FileNotFoundError(f"No existe la carpeta de resultados: {run_dir}")
+
+    for tgt in cfg["model"]["targets"]:
+        eval_target(run_dir, test, tgt, feats)
+
+
+# ──────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", "-c", required=True)
+    parser.add_argument("--config", "-c", required=True, help="ruta a YAML de configuración")
+    parser.add_argument("--run", "-r", required=True,
+                        help="subcarpeta dentro de models/ creada por train_xgb")
     main(**vars(parser.parse_args()))

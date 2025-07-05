@@ -46,16 +46,29 @@ def _parse_dates(cfg: dict) -> tuple[datetime, datetime]:
     return start, end
 
 
-def _open_many_nc(nc_paths: List[Path]) -> xr.Dataset:
-    """Combina varios .nc mensuales (mismo schema) vía xarray."""
-    ds = xr.open_mfdataset(
+def _open_many_nc(nc_paths: list[Path]) -> xr.Dataset:
+    """
+    Abre decenas de NetCDF ERA5 asegurando que solo se use
+    la versión más reciente (expver) y evitando conflictos.
+    """
+    import xarray as xr
+
+    def _drop_expver(ds: xr.Dataset) -> xr.Dataset:
+        # Selecciona la expver más alta (normalmente 5) y elimina la variable.
+        if "expver" in ds.dims:
+            ds = ds.sel(expver=ds.expver.max())
+            ds = ds.drop_vars("expver")
+        return ds
+
+    return xr.open_mfdataset(
         [str(p) for p in nc_paths],
         combine="by_coords",
+        preprocess=_drop_expver,   # ← clave
+        compat="override",         # evita conflictos menores
+        coords="minimal",
         parallel=True,
-        chunks={"time": 24},  # 1 día ≈ bloque
-        engine="netcdf4",
+        engine="h5netcdf",
     )
-    return ds
 
 
 # ------------------------------------------------------------------
