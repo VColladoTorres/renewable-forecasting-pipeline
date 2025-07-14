@@ -1,0 +1,132 @@
+A continuación se detallan, de forma secuencial y técnica, los pasos a seguir una vez que ya dispones de tu `dataset.parquet`:
+
+---
+
+**1. Ingeniería de características**
+1.1. Ejecutar el módulo de feature‐engineering para añadir retardos y medias móviles, y generar el fichero `features.parquet`:
+
+```bash
+python -m src.features.build_features --config configs/default.yaml
+```
+
+1.2. Verificar que en `data/processed/features.parquet` aparecen las columnas `wind_lag*`, `solar_pv_roll*`, `wind_power_theory`, y la columna `split` con valores `train`, `val`, `test`.
+
+---
+
+**2. Entrenamiento de los modelos XGBoost**
+2.1. Lanzar el script de entrenamiento, que ejecuta Optuna para hiperparámetros y guarda modelo+scaler en `models/xgb_YYYYMMDD_HHMM/`:
+
+```bash
+python -m src.models.train_xgb --config configs/default.yaml
+```
+
+2.2. Comprobar en la carpeta resultante los artefactos:
+
+* `model.joblib`
+* `scaler.joblib`
+* `best_params.json`
+
+---
+
+**3. Evaluación sobre test set**
+3.1. Generar métricas y el gráfico observados vs predichos:
+
+```bash
+python -m src.models.evaluate --config configs/default.yaml --run xgb_YYYYMMDD_HHMM
+```
+
+3.2. Revisa en `models/xgb_…/prediction_vs_obs.png` y los logs con MAE / RMSE / nMAE / R².
+
+---
+
+**4. Línea base y comparativa**
+4.1. Calcular persistencia-24 h (benchmark):
+
+```bash
+python -m src.models.baseline --config configs/default.yaml
+```
+
+4.2. Comparar tu modelo contra la persistencia-24 h:
+
+```bash
+python -m src.analysis.compare_runs -c configs/default.yaml -r xgb_YYYYMMDD_HHMM
+```
+
+Se generarán `baseline_persist24.csv`, `compare_baseline.csv` e `improvement.png`.
+
+---
+
+**5. Diagnóstico detallado de error**
+Agrupa el RMSE por hora, mes o bin de viento para identificar patrones:
+
+```bash
+python -m src.analysis.error_breakdown -c configs/default.yaml -r xgb_… -g hour
+```
+
+Repite con `-g month` y `-g wind_bin`.
+
+---
+
+**6. Interpretabilidad con SHAP**
+6.1. SHAP global (summary plot):
+
+```bash
+python -m src.analysis.shap_summary -c configs/default.yaml -r xgb_…
+```
+
+6.2. SHAP local (force plot) para los N casos peores:
+
+```bash
+python -m src.analysis.shap_local -c configs/default.yaml -r xgb_… -t wind -n 10
+```
+
+Guardará HTML/PNG en `models/xgb_…/shap/` y `shap_local/`.
+
+---
+
+**7. Generación de pronóstico 7 días**
+Asumiendo que tienes los NetCDF HRES en `data/raw/hres`:
+
+```bash
+python -m src.prediction.predict -c configs/default.yaml -m models/current --era5-dir data/raw/hres
+```
+
+Obtendrás `forecast_7d.csv` y `forecast_7d.json` en `outputs/<timestamp>/`.
+
+---
+
+**8. Comprobaciones adicionales & empaquetado**
+
+* Validar integridad de NetCDF crudos: `scripts/check_nc_integrity.py`
+* Ejecutar tests unitarios:
+
+  ```bash
+  pytest -q
+  ```
+* Construir la imagen Docker para despliegue:
+
+  ```bash
+  docker build -t renewable-forecasting-pipeline -f docker/Dockerfile .
+  ```
+
+---
+
+Si necesitas profundizar en alguno de estos puntos (configuración de Optuna, personalización de features, despliegue en producción, etc.), házmelo saber y amplío el detalle.
+
+
+
+
+
+----------------------------------------------------------
+
+
+python -m src.models.baseline --config configs/default.yaml
+python -m src.analysis.compare_runs -c configs/default.yaml -r xgb_20250708_2015
+python -m src.analysis.error_breakdown -c configs/default.yaml -r xgb_20250708_2015 -g hour
+python -m src.analysis.error_breakdown -c configs/default.yaml -r xgb_20250708_2015 -g month
+python -m src.analysis.error_breakdown -c configs/default.yaml -r xgb_20250708_2015 -g wind_bin
+python -m src.analysis.shap_summary -c configs/default.yaml -r xgb_20250708_2015
+python -m src.analysis.shap_local -c configs/default.yaml -r xgb_20250708_2015 -t wind -n 10
+python -m src.prediction.predict -c configs/default.yaml -m models/current --era5-dir data/raw/hres
+pytest -q
+docker build -t renewable-forecasting-pipeline -f docker/Dockerfile .

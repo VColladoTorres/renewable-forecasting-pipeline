@@ -1,0 +1,4368 @@
+﻿### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\bootstrap_repo.py ###
+"""
+Genera el repo â€œrenewable-forecasting-pipelineâ€ con un solo comando.
+MIT Â© 2025 MSc Candidate
+"""
+from __future__ import annotations
+
+import textwrap
+from pathlib import Path
+
+# ---------------------------------------------------- #
+#  Mapa: ruta â†’ contenido (multilÃ­nea)                  #
+# ---------------------------------------------------- #
+FILES: dict[str, str] = {
+    ".env.example": textwrap.dedent(
+        """\
+        # Copia a .env y rellena con tus claves reales
+        ESIOS_TOKEN=5fceb15ccd22a22b251223161ac2500b61c433af22ffeaf3feecf6e97262ccbb
+        CDS_API_KEY=b4f98e85-8c4a-4866-b49d-fe25bf3f77ad:49b69de6-d1f3-482f-b380-5e3e88188a87
+        """
+    ),
+    ".gitignore": textwrap.dedent(
+        """\
+        # artefactos que NO deben subirse
+        .env
+        .venv/
+        __pycache__/
+        data/
+        models/
+        """
+    ),
+    "pyproject.toml": """\
+# MIT Â© 2025 MSc Candidate
+[build-system]
+requires = ["setuptools>=65", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "renewable-forecasting-pipeline"
+version = "0.1.0"
+description = "End-to-end Spanish wind & PV forecasting pipeline (ERA5-Land + ESIOS)"
+authors = [{name = "MSc Candidate", email = "author@example.com"}]
+license = {text = "MIT"}
+requires-python = ">=3.9"
+
+dependencies = [
+    "pandas>=2.2",
+    "numpy>=1.26",
+    "python-dotenv>=1.0",
+    "requests>=2.32",
+    "cdsapi>=0.6",
+    "xgboost>=2.0",
+    "scikit-learn>=1.4",
+    "optuna>=3.6",
+    "joblib>=1.4",
+    "matplotlib>=3.9",
+    "pyyaml>=6.0",
+    "ruff>=0.4",
+    "tqdm>=4.66",
+    "xarray>=2024.2",
+    "netCDF4>=1.6",
+    "scipy>=1.13"
+]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 88
+select = ["E", "F", "I", "UP", "B"]
+""",
+    "README.md": textwrap.dedent(
+        """\
+        # Renewable-Forecasting-Pipeline
+
+        Workflow reproductible para previsiÃ³n horaria de **eÃ³lica on-shore** y **PV utility-scale** en EspaÃ±a (2018-2024).
+
+        ## Uso rÃ¡pido
+        ```bash
+        cp .env.example .env         # aÃ±ade tus tokens
+        pip install -e .
+        python -m src.data.make_dataset     --config configs/default.yaml
+        python -m src.features.build_features --config configs/default.yaml
+        python -m src.models.train_xgb       --config configs/default.yaml
+        python -m src.models.evaluate        --config configs/default.yaml
+        ```
+        """
+    ),
+    "configs/default.yaml": textwrap.dedent(
+        """\
+        paths:
+          raw_dir: data/raw
+          interim_dir: data/interim
+          processed_dir: data/processed
+          models: models
+          feature_table: data/processed/features.parquet
+
+        data:
+          target: mw
+          split:
+            train_end: "2022-12-31T23:00:00+01:00"
+            val_end:   "2023-06-30T23:00:00+02:00"
+
+        variables:
+          era5:
+            - wind_speed_100m
+            - surface_solar_radiation_downwards
+            - temperature_2m
+
+        feature_engineering:
+          lags: [1, 2, 3, 6, 12, 24, 48]
+          rolling_means: [3, 6]
+
+        optuna:
+          n_trials: 50
+        """
+    ),
+    "docker/Dockerfile": textwrap.dedent(
+        """\
+        # MIT Â© 2025 MSc Candidate
+        FROM python:3.10-slim
+        ENV PIP_NO_CACHE_DIR=1 PYTHONUNBUFFERED=1
+        WORKDIR /app
+
+        # sistema deps para NetCDF & CDO
+        RUN apt-get update && apt-get install -y --no-install-recommends \\
+                libproj-dev proj-data proj-bin cdo && \\
+            rm -rf /var/lib/apt/lists/*
+
+        COPY pyproject.toml ./
+        RUN pip install --upgrade pip && pip install -r <(python - <<'EOF'
+import tomllib, pathlib, sys
+deps = tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['dependencies']
+print('\\n'.join(deps))
+EOF
+        )
+
+        COPY src ./src
+        COPY configs ./configs
+        ENTRYPOINT ["python", "-m", "src.models.train_xgb", "--config", "configs/default.yaml"]
+        """
+    ),
+    ".github/workflows/ci.yml": textwrap.dedent(
+        """\
+        name: CI
+        on: [push, pull_request]
+        jobs:
+          test:
+            runs-on: ubuntu-latest
+            steps:
+              - uses: actions/checkout@v4
+              - uses: actions/setup-python@v4
+                with: {python-version: "3.10"}
+              - run: pip install -r <(python - <<'EOF'
+import tomllib, pathlib, sys
+print('\\n'.join(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['dependencies']))
+EOF
+                )
+              - run: ruff .
+              - run: pytest -q
+        """
+    ),
+    # ---------- src package ---------- #
+    "src/__init__.py": '"""Package root."""\n',
+    "src/utils/__init__.py": '"""Shared utilities."""\n',
+    "src/utils/logger.py": textwrap.dedent(
+        '''\
+        """Standardised logger."""
+        import logging, sys
+        FORMAT = "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
+        def init_logger(level: int = logging.INFO) -> None:
+            logging.basicConfig(level=level, format=FORMAT,
+                                handlers=[logging.StreamHandler(sys.stdout)])
+        '''
+    ),
+    "src/data/__init__.py": '"""Data layer."""\n',
+    "src/data/esios_client.py": """<ESIOS_CLIENT_CODE>""",
+    "src/data/cds_client.py": """<CDS_CLIENT_CODE>""",
+    "src/data/make_dataset.py": """<MAKE_DATASET_CODE>""",
+    "src/features/__init__.py": '"""Feature eng."""\n',
+    "src/features/build_features.py": """<BUILD_FEATURES_CODE>""",
+    "src/models/__init__.py": '"""ML models."""\n',
+    "src/models/train_xgb.py": """<TRAIN_XGB_CODE>""",
+    "src/models/evaluate.py": """<EVALUATE_CODE>""",
+    # ---------- tests ---------- #
+    "tests/test_esios_client.py": """<TEST_ESIOS_CODE>""",
+    "tests/test_split.py": """<TEST_SPLIT_CODE>""",
+}
+
+# Sustituye marcadores por los fragmentos de cÃ³digo completos ya suministrados
+REPLACEMENTS = {
+    "<ESIOS_CLIENT_CODE>": ''' 
+# MIT License
+# Copyright (c) 2025 MSc Candidate
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy â€¦
+"""
+ESIOS REST-API client.
+
+Rationale
+---------
+Encapsulates HTTP + pagination while keeping token outside VCS.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+from datetime import datetime, timezone
+from typing import Any, Dict, List
+
+import pandas as pd
+import requests
+from dotenv import load_dotenv
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+load_dotenv()
+_LOGGER = logging.getLogger(__name__)
+_BASE_URL = "https://api.esios.ree.es"
+_API_VERSION = "v1"
+
+_TECH_MAP = {
+    "wind": 75,          # ESIOS â€œGeneraciÃ³n eÃ³licaâ€
+    "solar_pv": 68,      # â€œGeneraciÃ³n fotovoltaicaâ€
+    "demand": 1,         # â€œDemanda peninsularâ€
+}
+
+
+class EsiosClient:
+    """Thin wrapper around the ESIOS API."""
+
+    def __init__(self, token: str | None = None) -> None:
+        token = token or os.getenv("ESIOS_TOKEN")
+        if not token:
+            raise ValueError("ESIOS_TOKEN missing. Provide via env or arg.")
+
+        self._headers = {
+            "Accept": f"application/json; application/vnd.esios-api.{_API_VERSION}",
+            "Authorization": f"Token token={token}",
+        }
+        self._session = requests.Session()
+        retries = Retry(
+            total=5,
+            backoff_factor=0.3,
+            status_forcelist=(429, 500, 502, 503, 504),
+            allowed_methods=["GET"],
+        )
+        self._session.mount("https://", HTTPAdapter(max_retries=retries))
+
+    # ---------------- public methods ---------------- #
+    def fetch_series(
+        self,
+        start: datetime,
+        end: datetime,
+        technology: str = "wind",
+    ) -> pd.DataFrame:
+        """Return hourly MW series in Europe/Madrid."""
+        series_id = _TECH_MAP[technology]
+        url = f"{_BASE_URL}/archives/{series_id}"
+        params = {
+            "start_date": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "end_date": end.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "time_trunc": "hour",
+        }
+        raw = self._paginate(url, params)
+        df = _json_to_df(raw)
+        return df.tz_convert("Europe/Madrid")
+
+    # ---------------- internal ---------------- #
+    def _paginate(self, url: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:
+        data: List[Dict[str, Any]] = []
+        while url:
+            _LOGGER.debug("GET %s", url)
+            r = self._session.get(url, params=params, headers=self._headers, timeout=30)
+            r.raise_for_status()
+            body = r.json()
+            data.extend(body["data"])
+            url = body.get("links", {}).get("next")
+            params = {}
+        return data
+
+
+def _json_to_df(payload: List[Dict[str, Any]]) -> pd.DataFrame:
+    df = pd.json_normalize(payload, sep="_")
+    df["timestamp"] = pd.to_datetime(df["attributes_datetime"], utc=True)
+    df.set_index("timestamp", inplace=True)
+    df = df[["attributes_value"]].rename(columns={"attributes_value": "mw"})
+    return df.sort_index()
+''',
+    "<CDS_CLIENT_CODE>": ''' # MIT License
+# Copyright (c) 2025 MSc Candidate
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy â€¦
+"""
+Copernicus CDS (ERA5-Land) client.
+"""
+from __future__ import annotations
+
+import logging
+from datetime import datetime
+from pathlib import Path
+from typing import List
+
+import cdsapi
+import xarray as xr
+
+_LOGGER = logging.getLogger(__name__)
+
+
+class CDSClient:
+    """Download ERA5-Land hourly data and merge monthly files lazily."""
+
+    def __init__(self, target_dir: str | Path = "data/raw/era5") -> None:
+        self._client = cdsapi.Client(quiet=True)
+        self._target_dir = Path(target_dir)
+        self._target_dir.mkdir(parents=True, exist_ok=True)
+
+    # ------------------------------------------------------------------ #
+    def download(
+        self,
+        variables: List[str],
+        start: datetime,
+        end: datetime,
+        grid: float = 0.25,
+    ) -> Path:
+        """Return path to merged NetCDF covering *start*â€“*end* inclusive."""
+        months = _month_stubs(start, end)
+        paths: List[Path] = []
+        for stub in months:
+            out = self._target_dir / f"era5_{stub}.nc"
+            if out.exists():
+                paths.append(out)
+                continue
+            _LOGGER.info("Request ERA5-Land %s â†’ %s", stub, out.name)
+            self._client.retrieve(
+                "reanalysis-era5-land",
+                {
+                    "format": "netcdf",
+                    "variable": variables,
+                    "year": stub[:4],
+                    "month": stub[4:6],
+                    "day": [f"{d:02d}" for d in range(1, 32)],
+                    "time": [f"{h:02d}:00" for h in range(24)],
+                    "grid": [grid, grid],
+                },
+                str(out),
+            )
+            paths.append(out)
+
+        merged = self._target_dir / "era5_combined.nc"
+        if len(paths) == 1:
+            return paths[0]
+        _LOGGER.info("Concatenate %d NetCDFs â†’ %s", len(paths), merged.name)
+        ds = xr.open_mfdataset(paths, combine="by_coords")  # lazy
+        ds.to_netcdf(merged)
+        return merged
+
+
+# ---------------- helpers ---------------- #
+def _month_stubs(start: datetime, end: datetime) -> List[str]:
+    cur, stubs = start.replace(day=1), []
+    while cur <= end:
+        stubs.append(cur.strftime("%Y%m"))
+        cur = (cur.replace(day=28) + pd.Timedelta(days=4)).replace(day=1)  # next month
+    return stubs
+''' ,
+    "<MAKE_DATASET_CODE>": ''' 
+# MIT License
+# Copyright (c) 2025 MSc Candidate
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy â€¦
+"""
+ETL script: downloads ESIOS + ERA5, aligns hourly and persists parquet.
+
+Run:
+    python -m src.data.make_dataset --config configs/default.yaml
+"""
+from __future__ import annotations
+
+import argparse
+import logging
+from datetime import datetime, timezone
+from pathlib import Path
+
+import pandas as pd
+import xarray as xr
+import yaml
+from tqdm import tqdm
+
+from src.data.cds_client import CDSClient
+from src.data.esios_client import EsiosClient
+from src.utils.logger import init_logger
+
+init_logger()
+_LOGGER = logging.getLogger(__name__)
+
+
+def _parse_dates(cfg: dict) -> tuple[datetime, datetime]:
+    test_end = pd.Timestamp(cfg["data"]["split"]["val_end"]).tz_convert("UTC")
+    train_start = pd.Timestamp("2018-01-01T00:00:00+00:00")
+    return train_start.to_pydatetime(), test_end.to_pydatetime()
+
+
+def main(config: str) -> None:  # noqa: D401
+    with open(config) as f:
+        cfg = yaml.safe_load(f)
+
+    raw_dir = Path(cfg["paths"]["raw_dir"])
+    raw_dir.mkdir(parents=True, exist_ok=True)
+
+    start, end = _parse_dates(cfg)
+
+    # ------------ download ESIOS series ------------ #
+    esios = EsiosClient()
+    dfs = []
+    for tech in ("wind", "solar_pv"):
+        _LOGGER.info("Download %s generationâ€¦", tech)
+        dfs.append(esios.fetch_series(start, end, technology=tech).rename(columns={"mw": tech}))
+    demand = esios.fetch_series(start, end, technology="demand").rename(columns={"mw": "demand"})
+    df_gen = pd.concat(dfs + [demand], axis=1)
+
+    # ------------ download ERA5-Land --------------- #
+    cds = CDSClient(raw_dir / "era5")
+    nc_path = cds.download(cfg["variables"]["era5"], start, end)
+    _LOGGER.info("Open ERA5 dataset %s", nc_path.name)
+    ds = xr.open_dataset(nc_path)  # lazily read
+
+    # Spatial average over Spain (bounding box as rough proxy)
+    spain = ds.sel(latitude=slice(44, 36), longitude=slice(-10, 5)).mean(
+        ["latitude", "longitude"]
+    )
+    df_met = spain.to_dataframe()
+    df_met.index = df_met.index.tz_localize(timezone.utc).tz_convert("Europe/Madrid")
+
+    # ------------ merge & persist ------------------ #
+    df = df_gen.join(df_met, how="inner")
+    out = Path(cfg["paths"]["processed_dir"])
+    out.mkdir(parents=True, exist_ok=True)
+    df.to_parquet(out / "dataset.parquet")
+    _LOGGER.info("Saved merged dataset with %d rows", len(df))
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Build raw dataset.")
+    parser.add_argument("--config", "-c", required=True, help="YAML config path.")
+    main(**vars(parser.parse_args()))
+''' ,
+    "<BUILD_FEATURES_CODE>": '''
+# MIT License
+# Copyright (c) 2025 MSc Candidate
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy â€¦
+"""
+Create lag/rolling features and temporal splits.
+
+Run:
+    python -m src.features.build_features --config configs/default.yaml
+"""
+from __future__ import annotations
+
+import argparse
+import logging
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import yaml
+from tqdm import tqdm
+
+from src.utils.logger import init_logger
+
+init_logger()
+_LOGGER = logging.getLogger(__name__)
+
+
+def main(config: str) -> None:  # noqa: D401
+    with open(config) as f:
+        cfg = yaml.safe_load(f)
+
+    df = pd.read_parquet(Path(cfg["paths"]["processed_dir"]) / "dataset.parquet")
+
+    # ---------------- feature engineering ---------------- #
+    lags = cfg["feature_engineering"]["lags"]
+    rolls = cfg["feature_engineering"]["rolling_means"]
+
+    for col in ("wind", "solar_pv"):
+        for k in lags:
+            df[f"{col}_lag{k}"] = df[col].shift(k)
+        for w in rolls:
+            df[f"{col}_roll{w}"] = df[col].rolling(w).mean()
+
+    # simple theoretical wind power from 100 m speed: P ~ vÂ³
+    df["wind_power_theory"] = (df["wind_speed_100m"] ** 3).clip(upper=30_000)
+
+    # drop rows with NA introduced by lags
+    df.dropna(inplace=True)
+
+    # ---------------- splits ---------------- #
+    train_end = pd.Timestamp(cfg["data"]["split"]["train_end"])
+    val_end = pd.Timestamp(cfg["data"]["split"]["val_end"])
+
+    df["split"] = np.where(
+        df.index <= train_end,
+        "train",
+        np.where(df.index <= val_end, "val", "test"),
+    )
+
+    # save
+    out_path = Path(cfg["paths"]["feature_table"])
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_parquet(out_path)
+    _LOGGER.info("Features ready â†’ %s (%d rows)", out_path, len(df))
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Build features table.")
+    parser.add_argument("--config", "-c", required=True)
+    main(**vars(parser.parse_args()))
+''',
+    "<TRAIN_XGB_CODE>": '''
+# MIT License
+# Copyright (c) 2025 MSc Candidate
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy â€¦
+"""
+Train XGBoost with Optuna.
+
+Run:
+    python -m src.models.train_xgb --config configs/default.yaml
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import os
+from pathlib import Path
+
+import joblib
+import numpy as np
+import optuna
+import pandas as pd
+import xgboost as xgb
+import yaml
+from sklearn.metrics import mean_squared_error
+from sklearn.preprocessing import StandardScaler
+
+from src.utils.logger import init_logger
+
+RANDOM_SEED = 42
+np.random.seed(RANDOM_SEED)
+init_logger()
+_LOGGER = logging.getLogger(__name__)
+
+
+def _objective(trial, X_train, y_train, X_val, y_val):
+    params = {
+        "objective": "reg:squarederror",
+        "tree_method": "hist",
+        "n_estimators": trial.suggest_int("n_estimators", 200, 2000),
+        "learning_rate": trial.suggest_float("eta", 1e-3, 0.3, log=True),
+        "max_depth": trial.suggest_int("max_depth", 3, 12),
+        "subsample": trial.suggest_float("subsample", 0.4, 1.0),
+        "colsample_bytree": trial.suggest_float("colsample_bytree", 0.4, 1.0),
+        "reg_lambda": trial.suggest_float("lambda", 1e-2, 10.0, log=True),
+        "reg_alpha": trial.suggest_float("alpha", 1e-3, 10.0, log=True),
+        "random_state": RANDOM_SEED,
+        "n_jobs": os.cpu_count(),
+    }
+    model = xgb.XGBRegressor(**params)
+    model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
+    pred = model.predict(X_val)
+    rmse = mean_squared_error(y_val, pred, squared=False)
+    return rmse
+
+
+def main(config: str) -> None:  # noqa: D401
+    with open(config) as f:
+        cfg = yaml.safe_load(f)
+
+    df = pd.read_parquet(cfg["paths"]["feature_table"])
+    target = cfg["data"]["target"]
+    feats = [c for c in df.columns if c not in (target, "split")]
+
+    train = df[df["split"] == "train"]
+    val = df[df["split"] == "val"]
+
+    scaler = StandardScaler()
+    X_train = scaler.fit_transform(train[feats])
+    y_train = train[target]
+    X_val = scaler.transform(val[feats])
+    y_val = val[target]
+
+    study = optuna.create_study(direction="minimize", sampler=optuna.samplers.TPESampler(seed=RANDOM_SEED))
+    study.optimize(lambda t: _objective(t, X_train, y_train, X_val, y_val), n_trials=cfg["optuna"]["n_trials"])
+
+    best = study.best_params | {
+        "objective": "reg:squarederror",
+        "tree_method": "hist",
+        "random_state": RANDOM_SEED,
+        "n_jobs": os.cpu_count(),
+    }
+    model = xgb.XGBRegressor(**best)
+    model.fit(np.vstack([X_train, X_val]), np.hstack([y_train, y_val]))
+
+    out_dir = Path(cfg["paths"]["models"])
+    out_dir.mkdir(parents=True, exist_ok=True)
+    joblib.dump(model, out_dir / "xgb_model.joblib")
+    joblib.dump(scaler, out_dir / "scaler.joblib")
+    json.dump(best, (out_dir / "best_params.json").open("w"))
+
+    _LOGGER.info("Model + artefacts saved to %s", out_dir)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", "-c", required=True)
+    main(**vars(parser.parse_args()))
+''',
+    "<EVALUATE_CODE>": '''
+# MIT License
+# Copyright (c) 2025 MSc Candidate
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy â€¦
+"""
+Evaluate trained model and create diagnostic plot.
+
+Run:
+    python -m src.models.evaluate --config configs/default.yaml
+"""
+from __future__ import annotations
+
+import argparse
+import logging
+from pathlib import Path
+
+import joblib
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import yaml
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+
+from src.utils.logger import init_logger
+
+init_logger()
+_LOGGER = logging.getLogger(__name__)
+
+
+def main(config: str) -> None:  # noqa: D401
+    with open(config) as f:
+        cfg = yaml.safe_load(f)
+
+    df = pd.read_parquet(cfg["paths"]["feature_table"])
+    test = df[df["split"] == "test"]
+
+    model = joblib.load(Path(cfg["paths"]["models"]) / "xgb_model.joblib")
+    scaler = joblib.load(Path(cfg["paths"]["models"]) / "scaler.joblib")
+    feats = [c for c in test.columns if c not in ("mw", "split")]
+    X_test = scaler.transform(test[feats])
+    y_true = test["mw"].values
+    y_pred = model.predict(X_test)
+
+    mae = mean_absolute_error(y_true, y_pred)
+    rmse = mean_squared_error(y_true, y_pred, squared=False)
+    nmae = mae / y_true.max()
+    r2 = r2_score(y_true, y_pred)
+    _LOGGER.info("Test MAE %.2f | RMSE %.2f | nMAE %.2f | RÂ² %.3f", mae, rmse, nmae, r2)
+
+    # plot
+    plt.figure(figsize=(10, 4))
+    plt.plot(test.index, y_true, label="obs")
+    plt.plot(test.index, y_pred, label="pred")
+    plt.legend()
+    plt.title("XGB â€“ observed vs predicted")
+    out_png = Path(cfg["paths"]["models"]) / "prediction_vs_obs.png"
+    plt.savefig(out_png, dpi=150, bbox_inches="tight")
+    _LOGGER.info("Plot saved to %s", out_png)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", "-c", required=True)
+    main(**vars(parser.parse_args()))
+''',
+    "<TEST_ESIOS_CODE>": '''
+# MIT Â© 2025 MSc Candidate
+"""Unit test for EsiosClient using responses to mock HTTP."""
+import json
+from datetime import datetime, timezone
+
+import pandas as pd
+import pytest
+import responses
+
+from src.data.esios_client import EsiosClient
+
+
+@responses.activate
+def test_fetch_series():
+    start = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    end = datetime(2024, 1, 1, 1, tzinfo=timezone.utc)
+    sample = {
+        "data": [
+            {
+                "attributes": {
+                    "datetime": "2024-01-01T00:00:00Z",
+                    "value": 500,
+                }
+            },
+            {
+                "attributes": {
+                    "datetime": "2024-01-01T01:00:00Z",
+                    "value": 600,
+                }
+            },
+        ],
+        "links": {"next": None},
+    }
+    responses.add(
+        responses.GET,
+        "https://api.esios.ree.es/archives/75",
+        json=sample,
+        status=200,
+    )
+
+    client = EsiosClient(token="dummy")
+    df = client.fetch_series(start, end, technology="wind")
+    assert isinstance(df, pd.DataFrame)
+    assert df["mw"].iloc[0] == 500
+''',
+    "<TEST_SPLIT_CODE>": '''
+# MIT Â© 2025 MSc Candidate
+"""Verify there is no temporal leakage between splits."""
+import pandas as pd
+from src.features.build_features import main as build_main
+
+def test_split(tmp_path, monkeypatch):
+    # minimal dummy config
+    cfg_file = tmp_path / "cfg.yaml"
+    cfg_file.write_text(
+        """
+paths:
+  processed_dir: tests
+  feature_table: tests/feat.parquet
+data:
+  split:
+    train_end: "2020-12-31T23:00:00+01:00"
+    val_end: "2021-12-31T23:00:00+01:00"
+feature_engineering:
+  lags: [1]
+  rolling_means: []
+"""
+    )
+    # create dummy dataset
+    idx = pd.date_range("2020-01-01", periods=10, freq="H", tz="Europe/Madrid")
+    df = pd.DataFrame({"wind": range(10)}, index=idx)
+    df.to_parquet("tests/dataset.parquet")
+
+    build_main(str(cfg_file))
+    df_feat = pd.read_parquet("tests/feat.parquet")
+    assert set(df_feat["split"].unique()) == {"train", "val", "test"}
+''',
+}
+
+for marker, code in REPLACEMENTS.items():
+    for path, content in FILES.items():
+        if marker in content:
+            FILES[path] = content.replace(marker, code)
+
+# ---------------------------------------------------- #
+#  Escritura fÃ­sica                                    #
+# ---------------------------------------------------- #
+for filepath, content in FILES.items():
+    path = Path(filepath)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content.rstrip() + "\n", encoding="utf-8")
+
+print("Repo creado con", len(FILES), "archivos")
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\hacer txt los .py ###
+# 1) ColÃ³cate en la raÃ­z del proyecto
+cd "C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline"
+
+# 2) Vuelca todos los .py REALES (no enlaces) en un Ãºnico txt
+Get-ChildItem -Recurse -Filter *.py -File |
+    Where-Object {
+        $_.Attributes -notmatch 'ReparsePoint' -and       # quita symlinks
+        $_.FullName -notmatch '\\(venv|__pycache__)\\'    # quita carpetas basura
+    } |
+    ForEach-Object {
+        "### $($_.FullName) ###"
+        Get-Content -LiteralPath $_.FullName
+        ""
+    } |
+    Set-Content -Path proyecto_codigo.txt -Encoding utf8  # sobrescribe (o crea) el archivo
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\build\lib\__init__.py ###
+"""Package root."""
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\build\lib\data\cds_client.py ###
+# src/data/cds_client.py
+# MIT Â© 2025 MSc Candidate
+"""
+Cliente robusto para ERA5/ERA5-Land (Copernicus CDS).
+
+â€¢ Trocea descargas por mes â‰¤20 GB        â€¢ CachÃ© local .nc
+â€¢ Acepta dict Ã³ lista de dicts en download()
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Sequence
+
+import cdsapi
+import pandas as pd
+
+_LOGGER = logging.getLogger(__name__)
+
+
+class CDSClient:
+    """Wrapper cdsapi con cachÃ© mensual en disco."""
+
+    def __init__(
+        self,
+        out_dir: Path | str = Path("data/raw/cds"),
+        key: str | None = None,
+    ) -> None:
+        self._home = Path(out_dir).expanduser()
+        self._home.mkdir(parents=True, exist_ok=True)
+
+        key = key or os.getenv("CDS_API_KEY")
+        if not key:
+            raise ValueError("Falta CDS_API_KEY (.env o argumento)")
+
+        os.environ["CDSAPI_URL"] = "https://cds.climate.copernicus.eu/api/v2"
+        os.environ["CDSAPI_KEY"] = key
+        self._c = cdsapi.Client(timeout=3000)
+
+    # ------------------------------------------------------------------
+    def download(
+        self,
+        cfg: Dict[str, str] | Sequence[Dict[str, str]],
+        start: datetime,
+        end: datetime,
+    ) -> List[Path]:
+        """
+        Descarga una o varias variables ERA5.
+
+        Cada dict cfg_i requiere: dataset, name, short_name, extras (opcional)
+        """
+        cfgs = cfg if isinstance(cfg, list) else [cfg]
+
+        paths: list[Path] = []
+        for spec in cfgs:
+            paths.extend(self._download_one(spec, start, end))
+        return paths
+
+    # ------------------------- helpers -------------------------------
+    def _download_one(
+        self, spec: Dict[str, str], start: datetime, end: datetime
+    ) -> List[Path]:
+        months = _month_stubs(start, end)
+        out_files: list[Path] = []
+
+        for ym in months:
+            year, month = ym.split("-")
+            fn = self._home / spec["name"] / f"{ym}.nc"
+            if fn.exists():
+                _LOGGER.info("âœ“ %s existe â€“ omitido", fn.name)
+                out_files.append(fn)
+                continue
+
+            _LOGGER.info("ERA5 %s %s â€“ descargaâ€¦", spec["name"], ym)
+            fn.parent.mkdir(parents=True, exist_ok=True)
+
+            req = {
+                "product_type": "reanalysis",
+                "format": "netcdf",
+                "variable": spec["short_name"],
+                "year": year,
+                "month": month,
+                "day": [f"{d:02d}" for d in range(1, 32)],
+                "time": [f"{h:02d}:00" for h in range(24)],
+            } | spec.get("extras", {})
+
+            self._c.retrieve(spec["dataset"], req, str(fn))
+            out_files.append(fn)
+
+        return out_files
+
+
+# ----------------------------------------------------------------------
+def _month_stubs(start: datetime, end: datetime) -> list[str]:
+    """['YYYY-MM', â€¦] para cada mes entre start y end (incl.)."""
+    start = start.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    end = end.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+    months: list[str] = []
+    cur = start
+    while cur <= end:
+        months.append(cur.strftime("%Y-%m"))
+        # siguiente mes (28-01 + 4 d â‰ˆ 1-03) y day=1
+        cur = (cur.replace(day=28) + pd.Timedelta(days=4)).replace(day=1)
+    return months
+
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\build\lib\data\esios_client.py ###
+# src/data/esios_client.py
+# MIT Â© 2025 MSc Candidate
+"""
+Cliente robusto para la API de ESIOS (y fallback a apidados.ree.es).
+
+CaracterÃ­sticas
+â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+â€¢ AutenticaciÃ³n por x-api-key (si la hay)               â€¢ time_trunc=hour
+â€¢ Back-off exponencial + reintentos (429 / 5xx)         â€¢ Fallback a API pÃºblica
+â€¢ Troceo â‰¤ 24 h UTC                                     â€¢ CachÃ© JSON por dÃ­a
+â€¢ Ãndice horario tz-aware sin duplicados                â€¢ Logs legibles
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import time
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Any, Dict, List
+
+import pandas as pd
+import requests
+from dotenv import load_dotenv
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+load_dotenv()
+_LOGGER = logging.getLogger(__name__)
+BASE_PRIV = "https://api.esios.ree.es"
+BASE_PUB  = "https://apidatos.ree.es"        # fallback sin token
+CACHE_DIR = Path("data/raw/esios")           # se crea al vuelo
+HEADERS_BASE = {
+    "Accept": "application/json; application/vnd.esios-api-v2+json",
+    "Content-Type": "application/json",
+}
+IDS: dict[str, int] = {
+    "wind": 551,
+    "solar_pv": 1161,
+    "demand": 1,
+}
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+
+def _chunks_day(start: datetime, end: datetime) -> list[tuple[datetime, datetime]]:
+    """Ventanas de 24 h UTC exactas (requisito API)."""
+    cur, out = start, []
+    while cur <= end:
+        nxt = min(cur + timedelta(hours=23), end)
+        out.append((cur, nxt))
+        cur = (nxt + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+    return out
+
+
+def _json_to_df(values: List[Dict[str, Any]]) -> pd.DataFrame:
+    """Lista de valores â†’ DataFrame UTC; tolera lista vacÃ­a."""
+    if not values:
+        return pd.DataFrame(columns=["mw"])
+    df = pd.DataFrame(values)
+    ts_col = next((c for c in ("datetime", "datetime_utc", "date", "timestamp") if c in df), None)
+    if ts_col is None:
+        raise ValueError(f"Timestamp no encontrado en {df.columns.tolist()}")
+    df["ts"] = pd.to_datetime(df[ts_col], utc=True, errors="coerce")
+    df.set_index("ts", inplace=True)
+    val_col = next((c for c in df.columns if c.endswith("value")), "value")
+    return df[[val_col]].rename(columns={val_col: "mw"})
+
+
+def _dedup(df: pd.DataFrame) -> pd.DataFrame:
+    """Elimina duplicados de Ã­ndice manteniendo la 1.Âª apariciÃ³n."""
+    return df[~df.index.duplicated(keep="first")]
+
+
+class EsiosClient:
+    """Cliente resiliente para series horarias de ESIOS."""
+
+    def __init__(self, token: str | None = None) -> None:
+        self.api_key = token or os.getenv("ESIOS_API_KEY") or os.getenv("ESIOS_TOKEN")
+        self._session = self._build_session()
+
+    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ public â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    def fetch_series(self, start: datetime, end: datetime, technology: str = "wind") -> pd.DataFrame:
+        ind_id = IDS[technology]
+        frames: list[pd.DataFrame] = []
+        for s, e in _chunks_day(start, end):
+            chunk = self._get_day(ind_id, s, e)
+            if not chunk.empty:
+                frames.append(chunk)
+        if not frames:
+            _LOGGER.warning("Sin datos %s entre %s y %s", technology, start, end)
+            return pd.DataFrame(columns=[technology])
+        df = (
+            pd.concat(frames).sort_index()
+            .tz_convert("Europe/Madrid")
+            .pipe(_dedup)
+            .rename(columns={"mw": technology})
+        )
+        return df
+
+    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ internal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    def _build_session(self) -> requests.Session:
+        """SesiÃ³n con retry exponencial."""
+        retry_cfg = Retry(
+            total=6,
+            backoff_factor=0.7,                     # 0.7, 1.4, 2.8, â€¦
+            status_forcelist=(429, 500, 502, 503, 504),
+            allowed_methods=["GET"],
+            raise_on_status=False,
+        )
+        s = requests.Session()
+        s.mount("https://", HTTPAdapter(max_retries=retry_cfg))
+        return s
+
+    def _headers(self) -> Dict[str, str]:
+        return HEADERS_BASE | ({"x-api-key": self.api_key} if self.api_key else {})
+
+    # -------------- cachÃ© --------------
+    def _cache_file(self, ind: int, day: datetime) -> Path:
+        day_str = day.strftime("%Y-%m-%d")
+        p = CACHE_DIR / str(ind) / f"{day_str}.json"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        return p
+
+    def _load_cache(self, ind: int, day: datetime) -> list | None:
+        p = self._cache_file(ind, day)
+        if p.exists():
+            with p.open("r", encoding="utf-8") as fh:
+                return json.load(fh)
+        return None
+
+    def _save_cache(self, ind: int, day: datetime, payload: list) -> None:
+        p = self._cache_file(ind, day)
+        with p.open("w", encoding="utf-8") as fh:
+            json.dump(payload, fh)
+
+    # -------------- fetch --------------
+    def _get_day(self, ind: int, s: datetime, e: datetime) -> pd.DataFrame:
+        """Descarga un bloque de â‰¤24 h con cachÃ© y fallback."""
+        cached = self._load_cache(ind, s)
+        if cached is not None:
+            return _json_to_df(cached)
+
+        url_priv = self._build_url(BASE_PRIV, ind, s, e)
+        resp = self._session.get(url_priv, headers=self._headers(), timeout=30)
+
+        # fallback si token caducÃ³ o demasiados 5xx
+        if resp.status_code in (401, 403) or resp.status_code >= 500:
+            _LOGGER.warning("FallÃ³ %s â†’ %s, probando API pÃºblica", url_priv, resp.status_code)
+            url_pub = self._build_url(BASE_PUB, ind, s, e)
+            resp = self._session.get(url_pub, headers=HEADERS_BASE, timeout=30)
+
+        resp.raise_for_status()
+        payload = resp.json()["indicator"]["values"]
+        self._save_cache(ind, s, payload)
+        return _json_to_df(payload)
+
+    @staticmethod
+    def _build_url(base: str, ind: int, s: datetime, e: datetime) -> str:
+        return (
+            f"{base}/indicators/{ind}"
+            f"?start_date={s:%Y-%m-%dT%H:%M:%SZ}"
+            f"&end_date={e:%Y-%m-%dT%H:%M:%SZ}"
+            "&time_trunc=hour"
+        )
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\build\lib\data\make_dataset.py ###
+ 
+# MIT License
+# Copyright (c) 2025 MSc Candidate
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy â€¦
+"""
+ETL script: downloads ESIOS + ERA5, aligns hourly and persists parquet.
+
+Run:
+    python -m src.data.make_dataset --config configs/default.yaml
+"""
+from __future__ import annotations
+
+import argparse
+import logging
+from datetime import datetime, timezone
+from pathlib import Path
+
+import pandas as pd
+import xarray as xr
+import yaml
+from tqdm import tqdm
+
+from src.data.cds_client import CDSClient
+from src.data.esios_client import EsiosClient
+from src.utils.logger import init_logger
+
+init_logger()
+_LOGGER = logging.getLogger(__name__)
+
+
+def _parse_dates(cfg: dict) -> tuple[datetime, datetime]:
+    start = pd.Timestamp(cfg["data"]["start_date"]).tz_convert("UTC")
+    end   = pd.Timestamp(cfg["data"]["end_date"]).tz_convert("UTC")
+    return start.to_pydatetime(), end.to_pydatetime()
+
+
+def main(config: str) -> None:  # noqa: D401
+    with open(config) as f:
+        cfg = yaml.safe_load(f)
+
+    raw_dir = Path(cfg["paths"]["raw_dir"])
+    raw_dir.mkdir(parents=True, exist_ok=True)
+
+    start, end = _parse_dates(cfg)
+
+    # ------------ download ESIOS series ------------ #
+    esios = EsiosClient()
+    dfs = []
+    for tech in ("wind", "solar_pv"):
+        _LOGGER.info("Download %s generationâ€¦", tech)
+        dfs.append(esios.fetch_series(start, end, technology=tech).rename(columns={"mw": tech}))
+    demand = esios.fetch_series(start, end, technology="demand").rename(columns={"mw": "demand"})
+    df_gen = pd.concat(dfs + [demand], axis=1)
+
+    # ------------ download ERA5-Land --------------- #
+    cds = CDSClient(raw_dir / "era5")
+    nc_path = cds.download(cfg["variables"]["era5"], start, end)
+    _LOGGER.info("Open ERA5 dataset %s", nc_path.name)
+    ds = xr.open_dataset(nc_path)  # lazily read
+
+    # Spatial average over Spain (bounding box as rough proxy)
+    spain = ds.sel(latitude=slice(44, 36), longitude=slice(-10, 5)).mean(
+        ["latitude", "longitude"]
+    )
+    df_met = spain.to_dataframe()
+    df_met.index = df_met.index.tz_localize(timezone.utc).tz_convert("Europe/Madrid")
+
+    # ------------ merge & persist ------------------ #
+    df = df_gen.join(df_met, how="inner")
+    out = Path(cfg["paths"]["processed_dir"])
+    out.mkdir(parents=True, exist_ok=True)
+    df.to_parquet(out / "dataset.parquet")
+    _LOGGER.info("Saved merged dataset with %d rows", len(df))
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Build raw dataset.")
+    parser.add_argument("--config", "-c", required=True, help="YAML config path.")
+    main(**vars(parser.parse_args()))
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\build\lib\data\__init__.py ###
+"""Data layer."""
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\build\lib\features\build_features.py ###
+
+# MIT License
+# Copyright (c) 2025 MSc Candidate
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy â€¦
+"""
+Create lag/rolling features and temporal splits.
+
+Run:
+    python -m src.features.build_features --config configs/default.yaml
+"""
+from __future__ import annotations
+
+import argparse
+import logging
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import yaml
+from tqdm import tqdm
+
+from src.utils.logger import init_logger
+
+init_logger()
+_LOGGER = logging.getLogger(__name__)
+
+
+def main(config: str) -> None:  # noqa: D401
+    with open(config) as f:
+        cfg = yaml.safe_load(f)
+
+    df = pd.read_parquet(Path(cfg["paths"]["processed_dir"]) / "dataset.parquet")
+
+    # ---------------- feature engineering ---------------- #
+    lags = cfg["feature_engineering"]["lags"]
+    rolls = cfg["feature_engineering"]["rolling_means"]
+
+    for col in ("wind", "solar_pv"):
+        for k in lags:
+            df[f"{col}_lag{k}"] = df[col].shift(k)
+        for w in rolls:
+            df[f"{col}_roll{w}"] = df[col].rolling(w).mean()
+
+    # simple theoretical wind power from 100 m speed: P ~ vÂ³
+    df["wind_power_theory"] = (df["wind_speed_100m"] ** 3).clip(upper=30_000)
+
+    # drop rows with NA introduced by lags
+    df.dropna(inplace=True)
+
+    # ---------------- splits ---------------- #
+    train_end = pd.Timestamp(cfg["data"]["split"]["train_end"])
+    val_end = pd.Timestamp(cfg["data"]["split"]["val_end"])
+
+    df["split"] = np.where(
+        df.index <= train_end,
+        "train",
+        np.where(df.index <= val_end, "val", "test"),
+    )
+
+    # save
+    out_path = Path(cfg["paths"]["feature_table"])
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_parquet(out_path)
+    _LOGGER.info("Features ready â†’ %s (%d rows)", out_path, len(df))
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Build features table.")
+    parser.add_argument("--config", "-c", required=True)
+    main(**vars(parser.parse_args()))
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\build\lib\features\__init__.py ###
+"""Feature eng."""
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\build\lib\models\evaluate.py ###
+
+# MIT License
+# Copyright (c) 2025 MSc Candidate
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy â€¦
+"""
+Evaluate trained model and create diagnostic plot.
+
+Run:
+    python -m src.models.evaluate --config configs/default.yaml
+"""
+from __future__ import annotations
+
+import argparse
+import logging
+from pathlib import Path
+
+import joblib
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import yaml
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+
+from src.utils.logger import init_logger
+
+init_logger()
+_LOGGER = logging.getLogger(__name__)
+
+
+def main(config: str) -> None:  # noqa: D401
+    with open(config) as f:
+        cfg = yaml.safe_load(f)
+
+    df = pd.read_parquet(cfg["paths"]["feature_table"])
+    test = df[df["split"] == "test"]
+
+    model = joblib.load(Path(cfg["paths"]["models"]) / "xgb_model.joblib")
+    scaler = joblib.load(Path(cfg["paths"]["models"]) / "scaler.joblib")
+    feats = [c for c in test.columns if c not in ("mw", "split")]
+    X_test = scaler.transform(test[feats])
+    y_true = test["mw"].values
+    y_pred = model.predict(X_test)
+
+    mae = mean_absolute_error(y_true, y_pred)
+    rmse = mean_squared_error(y_true, y_pred, squared=False)
+    nmae = mae / y_true.max()
+    r2 = r2_score(y_true, y_pred)
+    _LOGGER.info("Test MAE %.2f | RMSE %.2f | nMAE %.2f | RÂ² %.3f", mae, rmse, nmae, r2)
+
+    # plot
+    plt.figure(figsize=(10, 4))
+    plt.plot(test.index, y_true, label="obs")
+    plt.plot(test.index, y_pred, label="pred")
+    plt.legend()
+    plt.title("XGB â€“ observed vs predicted")
+    out_png = Path(cfg["paths"]["models"]) / "prediction_vs_obs.png"
+    plt.savefig(out_png, dpi=150, bbox_inches="tight")
+    _LOGGER.info("Plot saved to %s", out_png)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", "-c", required=True)
+    main(**vars(parser.parse_args()))
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\build\lib\models\train_xgb.py ###
+
+# MIT License
+# Copyright (c) 2025 MSc Candidate
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy â€¦
+"""
+Train XGBoost with Optuna.
+
+Run:
+    python -m src.models.train_xgb --config configs/default.yaml
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import os
+from pathlib import Path
+
+import joblib
+import numpy as np
+import optuna
+import pandas as pd
+import xgboost as xgb
+import yaml
+from sklearn.metrics import mean_squared_error
+from sklearn.preprocessing import StandardScaler
+
+from src.utils.logger import init_logger
+
+RANDOM_SEED = 42
+np.random.seed(RANDOM_SEED)
+init_logger()
+_LOGGER = logging.getLogger(__name__)
+
+
+def _objective(trial, X_train, y_train, X_val, y_val):
+    params = {
+        "objective": "reg:squarederror",
+        "tree_method": "hist",
+        "n_estimators": trial.suggest_int("n_estimators", 200, 2000),
+        "learning_rate": trial.suggest_float("eta", 1e-3, 0.3, log=True),
+        "max_depth": trial.suggest_int("max_depth", 3, 12),
+        "subsample": trial.suggest_float("subsample", 0.4, 1.0),
+        "colsample_bytree": trial.suggest_float("colsample_bytree", 0.4, 1.0),
+        "reg_lambda": trial.suggest_float("lambda", 1e-2, 10.0, log=True),
+        "reg_alpha": trial.suggest_float("alpha", 1e-3, 10.0, log=True),
+        "random_state": RANDOM_SEED,
+        "n_jobs": os.cpu_count(),
+    }
+    model = xgb.XGBRegressor(**params)
+    model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
+    pred = model.predict(X_val)
+    rmse = mean_squared_error(y_val, pred, squared=False)
+    return rmse
+
+
+def main(config: str) -> None:  # noqa: D401
+    with open(config) as f:
+        cfg = yaml.safe_load(f)
+
+    df = pd.read_parquet(cfg["paths"]["feature_table"])
+    target = cfg["data"]["target"]
+    feats = [c for c in df.columns if c not in (target, "split")]
+
+    train = df[df["split"] == "train"]
+    val = df[df["split"] == "val"]
+
+    scaler = StandardScaler()
+    X_train = scaler.fit_transform(train[feats])
+    y_train = train[target]
+    X_val = scaler.transform(val[feats])
+    y_val = val[target]
+
+    study = optuna.create_study(direction="minimize", sampler=optuna.samplers.TPESampler(seed=RANDOM_SEED))
+    study.optimize(lambda t: _objective(t, X_train, y_train, X_val, y_val), n_trials=cfg["optuna"]["n_trials"])
+
+    best = study.best_params | {
+        "objective": "reg:squarederror",
+        "tree_method": "hist",
+        "random_state": RANDOM_SEED,
+        "n_jobs": os.cpu_count(),
+    }
+    model = xgb.XGBRegressor(**best)
+    model.fit(np.vstack([X_train, X_val]), np.hstack([y_train, y_val]))
+
+    out_dir = Path(cfg["paths"]["models"])
+    out_dir.mkdir(parents=True, exist_ok=True)
+    joblib.dump(model, out_dir / "xgb_model.joblib")
+    joblib.dump(scaler, out_dir / "scaler.joblib")
+    json.dump(best, (out_dir / "best_params.json").open("w"))
+
+    _LOGGER.info("Model + artefacts saved to %s", out_dir)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", "-c", required=True)
+    main(**vars(parser.parse_args()))
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\build\lib\models\__init__.py ###
+"""ML models."""
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\build\lib\utils\logger.py ###
+"""Standardised logger."""
+import logging, sys
+FORMAT = "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
+def init_logger(level: int = logging.INFO) -> None:
+    logging.basicConfig(level=level, format=FORMAT,
+                        handlers=[logging.StreamHandler(sys.stdout)])
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\build\lib\utils\__init__.py ###
+"""Shared utilities."""
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\scripts\check_nc_integrity.py ###
+# scripts/check_nc_integrity.py
+import sys, pathlib, xarray as xr
+
+root = pathlib.Path("data/raw/era5")   # cambia si tu ruta difiere
+bad = []
+
+for nc in root.rglob("*.nc"):
+    try:
+        xr.open_dataset(nc, engine="h5netcdf").close()
+    except Exception as e:
+        bad.append((nc, str(e)))
+
+if bad:
+    print("\nFicheros corruptos / incompletos:")
+    for p, err in bad:
+        print(f" âœ— {p}  â† {err.splitlines()[0]}")
+    sys.exit(1)
+else:
+    print("âœ“ Todos los NetCDF se abrieron sin error.")
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\scripts\convert_hres_to_nc.py ###
+#!/usr/bin/env python
+"""
+Convierte los GRIB2 HRES descargados (0.25Â°) a NetCDF, fusionando variables
+10u 10v 2t ssrd.  Omite ficheros ya convertidos o NetCDF directos.
+
+Uso:
+    python convert_hres_to_nc.py
+"""
+from __future__ import annotations
+from pathlib import Path
+
+import xarray as xr
+
+RAW_DIR = Path(__file__).resolve().parent.parent / "data" / "raw" / "hres"
+
+for grib in RAW_DIR.glob("ifs_hres_*.grib2"):
+    nc = grib.with_suffix(".nc")
+    if nc.exists():
+        continue
+
+    def _load(short: str) -> xr.Dataset:
+        """Abre una sola variable del GRIB2 con cfgrib."""
+        return xr.open_dataset(
+            grib,
+            engine="cfgrib",
+            backend_kwargs={
+                "filter_by_keys": {"shortName": short},
+                "indexpath": "",                 # desactiva index on-disk
+            },
+        ).drop_vars("heightAboveGround", errors="ignore")
+
+    ds = xr.merge([_load(s) for s in ("10u", "10v", "2t", "ssrd")], compat="override")
+
+    # elimina duplicados de la coordenada tiempo (a veces 0 h aparece dos veces)
+    time = ds.indexes["time"]
+    if time.duplicated().any():
+        ds = ds.sel(time=~time.duplicated())
+
+    ds.to_netcdf(nc, encoding={"time": {"calendar": "proleptic_gregorian"}})
+    print(f"âœ“ creado {nc.name}")
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\scripts\download_hres.py ###
+#!/usr/bin/env python
+"""
+Descarga la Ãºltima carrera disponible de ECMWF IFS-HRES (Open Data 0.25Â°)
+para la PenÃ­nsula IbÃ©rica:
+
+â€¢ Variables: 10u 10v 2t ssrd
+â€¢ Pasos 0â€“144 h cada 3 h (06/18 UTC) â€ƒ o â€ƒ0â€“168 h (00/12 UTC) aÃ±adido 150â€“168 h cada 6 h
+â€¢ Guarda GRIB2 y, si es compatible, NetCDF directamente
+â€¢ Reintenta hasta 3 veces con back-off si el bucket aÃºn no estÃ¡ listo
+â€¢ Escritura atÃ³mica â†’ primero *.tmp*, luego renombra
+"""
+
+from __future__ import annotations
+import logging
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import List
+
+from ecmwf.opendata import Client
+from tenacity import retry, stop_after_attempt, wait_incrementing
+
+# â”€â”€â”€â”€â”€ configuraciÃ³n â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+LOG = logging.getLogger("download_hres")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    datefmt="%H:%M:%S",
+)
+
+OUT_DIR = Path(__file__).resolve().parent.parent / "data" / "raw" / "hres"
+OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+PARAMS: list[str] = ["10u", "10v", "2t", "ssrd"]
+RESOL = "0p25"
+RUNS = (0, 6, 12, 18)
+
+
+# â”€â”€â”€â”€â”€ utilidades â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+def _latest_available_run(now: datetime) -> datetime:
+    """
+    Devuelve la Ãºltima hora de inicio de pronÃ³stico que deberÃ­a estar
+    ya publicada en el bucket Open-Data.
+    â€¢ 00 / 12 UTC â‡’ lag â‰ˆ 4 h
+    â€¢ 06 / 18 UTC â‡’ lag â‰ˆ 6 h
+    """
+    lag = 4 if now.hour in (0, 12) else 6
+    cand = now - timedelta(hours=lag)
+    run_hour = max(h for h in RUNS if h <= cand.hour)
+    return cand.replace(hour=run_hour, minute=0, second=0, microsecond=0,
+                        tzinfo=timezone.utc)
+
+
+def _step_list(run_hour: int) -> List[int]:
+    """Pasos permitidos segÃºn ECMWF Open-Data."""
+    base = list(range(0, 145, 3))                     # 0â€“144 h / 3 h
+    extra = list(range(150, 169, 6)) if run_hour in (0, 12) else []
+    return base + extra
+
+
+# â”€â”€â”€â”€â”€ descarga con reintentos â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+@retry(wait=wait_incrementing(start=30, increment=60, max=300),
+       stop=stop_after_attempt(3), reraise=True)
+def _fetch(run_time: datetime, target_tmp: Path, fmt: str) -> None:
+    client = Client(source="ecmwf", model="ifs", resol=RESOL)
+    client.retrieve(
+        date=run_time.strftime("%Y-%m-%d"),
+        time=run_time.hour,
+        type="fc",
+        param=PARAMS,
+        step=_step_list(run_time.hour),
+        target=str(target_tmp),
+        format=fmt,                     # "grib" o "netcdf"
+    )
+
+
+# â”€â”€â”€â”€â”€ nuevo cÃ¡lculo de Ãºltimo run disponible â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+def latest_run_candidates(now: datetime, attempts: int = 4) -> list[datetime]:
+    """
+    Devuelve una lista de candidatos (UTC) empezando por el run mÃ¡s reciente
+    **posible** y retrocediendo de 6 h en 6 h `attempts` veces.
+    """
+    lag_hours = 5 if now.hour in (0, 12) else 8    # margen seguro
+    first = now - timedelta(hours=lag_hours)
+    # alinear a 00, 06, 12, 18
+    aligned = first.replace(hour=max(h for h in RUNS if h <= first.hour),
+                            minute=0, second=0, microsecond=0,
+                            tzinfo=timezone.utc)
+    return [aligned - timedelta(hours=6*i) for i in range(attempts)]
+
+# â”€â”€â”€â”€â”€ main con fallback + mensaje claro â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+def main() -> None:
+    for run_time in latest_run_candidates(datetime.now(timezone.utc)):
+        stem = f"ifs_hres_{run_time:%Y%m%d%H}"
+        grib = OUT_DIR / f"{stem}.grib2"
+        nc   = OUT_DIR / f"{stem}.nc"
+
+        if nc.exists() or grib.exists():
+            LOG.info("Ya existe %s (nc o grib2)", stem)
+            return
+
+        LOG.info("Intentando run %s UTC â€¦", run_time.strftime("%Y-%m-%d %H"))
+        try:
+            # 1) NetCDF (si el servidor lo ofrece en futuro)
+            tmp = nc.with_suffix(".nc.tmp")
+            _fetch(run_time, tmp, fmt="netcdf")
+            tmp.rename(nc)
+            LOG.info("âœ“ NetCDF descargado â†’ %s (%.1f MB)", nc.name, nc.stat().st_size/1e6)
+            return
+        except Exception as e_nc:                               # noqa: BLE001
+            LOG.debug("NetCDF no disponible: %s", e_nc)
+
+        try:
+            # 2) GRIB2
+            tmp = grib.with_suffix(".grib2.tmp")
+            _fetch(run_time, tmp, fmt="grib")
+            tmp.rename(grib)
+            LOG.info("âœ“ GRIB2 descargado â†’ %s (%.1f MB)", grib.name, grib.stat().st_size/1e6)
+            return
+        except Exception as e_grib:                             # noqa: BLE001
+            LOG.warning("Run %s UTC no disponible aÃºn (%s).", run_time.hour, e_grib)
+
+    raise RuntimeError("Ninguno de los Ãºltimos 4 runs estÃ¡ publicado todavÃ­a.")
+
+
+
+if __name__ == "__main__":
+    main()
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\scripts\inspect_nc.py ###
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+InspecciÃ³n detallada de un HRES Open-Data (.nc o .grib2):
+
+$ python scripts/inspect_nc.py <path>
+
+â€¢ Si engine='netcdf4' falla, abre cada shortName por separado con cfgrib
+  y evita el conflicto heightAboveGround.
+â€¢ Muestra resumen de variables, dimensiones y atributos.
+"""
+from __future__ import annotations
+import argparse
+from pathlib import Path
+
+import pandas as pd
+import xarray as xr
+
+SHORTNAMES = ("10u", "10v", "2t", "ssrd")
+
+
+def open_single_var(path: Path, short: str) -> xr.Dataset:
+    """Carga sÃ³lo la variable `short` con cfgrib y elimina heightAboveGround."""
+    return xr.open_dataset(
+        path,
+        engine="cfgrib",
+        backend_kwargs={
+            "filter_by_keys": {"shortName": short},
+            "indexpath": "",          # no *.idx en disco
+        },
+    ).drop_vars("heightAboveGround", errors="ignore")
+
+
+def open_nwp(path: Path) -> xr.Dataset:
+    """Intenta netcdf4; si falla fusiona cada shortName vÃ­a cfgrib."""
+    try:
+        return xr.open_dataset(path, engine="netcdf4")
+    except Exception as e_nc:                        # noqa: BLE001
+        print(f"[netcdf4] fallÃ³: {e_nc}  â†’ cfgrib *por variable* â€¦")
+        parts = [open_single_var(path, s) for s in SHORTNAMES]
+        return xr.merge(parts, compat="override")
+
+
+def build_summary(ds: xr.Dataset) -> pd.DataFrame:
+    rows = []
+    for v in ds.data_vars:
+        dims = " Ã— ".join(f"{d}={ds.dims[d]}" for d in ds[v].dims)
+        attrs = {k: ds[v].attrs.get(k) for k in ("units", "long_name", "short_name") if k in ds[v].attrs}
+        rows.append({"variable": v, "dims": dims, "dtype": str(ds[v].dtype), **attrs})
+    return pd.DataFrame(rows)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("file", help="ruta al ifs_hres_*.nc / *.grib2")
+    args = parser.parse_args()
+
+    path = Path(args.file)
+    ds = open_nwp(path)
+    summary = build_summary(ds)
+
+    pd.set_option("display.max_rows", None)
+    print("\nâ”€ VARIABLES â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€")
+    print(summary.to_string(index=False))
+    print("\nâ”€ COORDENADAS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€")
+    for c in ds.coords:
+        print(f"{c:12s} dims={ds[c].dims} shape={ds[c].shape} attrs={list(ds[c].attrs.keys())}")
+
+
+if __name__ == "__main__":
+    main()
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\scripts\make_splits.py ###
+#!/usr/bin/env python
+"""
+Crea la columna 'split' en features.parquet usando cortes temporales fijos:
+    â€¢ train  â†’ hasta 2023-12-31 23:00
+    â€¢ val    â†’ 2024-01-01 .. 2024-12-31
+    â€¢ test   â†’ 2025-01-01 .. fin
+"""
+
+from pathlib import Path
+import pandas as pd
+
+FEATURES = Path("data/processed/features.parquet")  # <- ajusta si es otro nombre
+OUT      = FEATURES                                 # sobreescribe (o cambia)
+
+CUT_TRAIN_END = "2023-12-31 23:00"
+CUT_VAL_END   = "2024-12-31 23:00"
+
+df = pd.read_parquet(FEATURES)
+df["timestamp"] = pd.to_datetime(df["timestamp"])
+
+df.loc[df["timestamp"] <= CUT_TRAIN_END, "split"] = "train"
+df.loc[(df["timestamp"] > CUT_TRAIN_END) &
+       (df["timestamp"] <= CUT_VAL_END), "split"] = "val"
+df.loc[df["timestamp"] > CUT_VAL_END, "split"] = "test"
+
+df.to_parquet(OUT)
+print("âœ… columna 'split' aÃ±adida y guardada en", OUT)
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\scripts\plot_real_generation.py ###
+#!/usr/bin/env python
+"""
+Genera un HTML interactivo con la evoluciÃ³n diaria del Ãºltimo aÃ±o para:
+    â€¢ producciÃ³n eÃ³lica   (columna 'wind')
+    â€¢ producciÃ³n solar PV (columna 'solar_pv')
+    â€¢ demanda             (columna 'demand')
+El HTML se guarda en outputs/visualizaciones/real_generation_last_year.html
+"""
+
+from pathlib import Path
+import sys, webbrowser
+import pandas as pd
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+from datetime import timedelta
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ configuraciÃ³n â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+PARQUET = Path(
+    r"C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\data\processed\dataset.parquet"
+)
+
+COLS = {"wind": "EÃ³lica (MW)",
+        "solar_pv": "Solar PV (MW)",
+        "demand": "Demanda (MW)"}   # ajusta si tus columnas tienen otros nombres
+
+OUT_HTML = (
+    Path("outputs") / "visualizaciones" / "real_generation_last_year.html"
+)
+OUT_HTML.parent.mkdir(parents=True, exist_ok=True)
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ carga de datos â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+if not PARQUET.exists():
+    sys.exit(f"âŒ No se encontrÃ³ el parquet en {PARQUET}")
+
+df = pd.read_parquet(PARQUET)
+
+if "timestamp" not in df.columns:
+    sys.exit("âŒ El parquet no contiene la columna 'timestamp'.")
+
+df["timestamp"] = pd.to_datetime(df["timestamp"])
+df = df.set_index("timestamp").sort_index()
+
+# filtrar Ãºltimo aÃ±o
+end = df.index.max()
+start = end - timedelta(days=365)
+df_year = df.loc[start:end, COLS.keys()].copy()
+
+if df_year.empty:
+    sys.exit("âŒ No hay datos para el Ãºltimo aÃ±o en el parquet.")
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ figura interactiva â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+fig = make_subplots(
+    rows=3, cols=1, shared_xaxes=True,
+    subplot_titles=[COLS[c] for c in COLS]
+)
+
+for i, (col, label) in enumerate(COLS.items(), start=1):
+    if col not in df_year.columns:
+        fig.add_annotation(
+            text=f"'{col}' no encontrado", xref="paper", yref="paper",
+            x=0.5, y=1 - (i - 1) / 3, showarrow=False, font=dict(color="red")
+        )
+        continue
+
+    fig.add_trace(
+        go.Scatter(
+            x=df_year.index,
+            y=df_year[col],
+            mode="lines",
+            name=label,
+            line=dict(width=1.2)
+        ),
+        row=i, col=1
+    )
+
+fig.update_layout(
+    height=900,
+    title_text="ProducciÃ³n real â€“ Ãºltimo aÃ±o",
+    template="plotly_white",
+    showlegend=False,
+    hovermode="x unified",
+    margin=dict(t=70, l=60, r=30, b=40)
+)
+
+# guardar y abrir
+fig.write_html(str(OUT_HTML), include_plotlyjs="cdn")
+print(f"âœ… HTML generado: {OUT_HTML.resolve()}")
+webbrowser.open(OUT_HTML.resolve().as_uri())
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\scripts\show_grid.py ###
+#!/usr/bin/env python
+"""
+Muestra la malla 0.25Â° Ã— 0.25Â° usada para extraer meteorologÃ­a HRES
+sobre la PenÃ­nsula IbÃ©rica.
+"""
+
+from pathlib import Path
+import numpy as np
+import plotly.graph_objects as go
+import webbrowser
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ parÃ¡metros de dominio â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+LON_MIN, LON_MAX = -10.0, 4.0
+LAT_MIN, LAT_MAX =  36.0, 44.0
+RESOLUTION       = 0.25    # grados
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ generar la cuadrÃ­cula â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+lons = np.arange(LON_MIN, LON_MAX + RESOLUTION, RESOLUTION)
+lats = np.arange(LAT_MIN, LAT_MAX + RESOLUTION, RESOLUTION)
+lon_grid, lat_grid = np.meshgrid(lons, lats)
+lon_flat = lon_grid.ravel()
+lat_flat = lat_grid.ravel()
+
+print(f"â€¢ Nodos generados: {len(lon_flat)}")
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ figura interactiva â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+fig = go.Figure()
+
+# puntos de la malla
+fig.add_trace(go.Scattergeo(
+    lon = lon_flat,
+    lat = lat_flat,
+    mode = "markers",
+    marker = dict(size=4, color="red", opacity=0.7),
+    name = "Nodos 0.25Â°"
+))
+
+# estilo general
+fig.update_geos(
+    projection_type="mercator",
+    showcountries=True,  countrycolor="black",
+    showcoastlines=True, coastlinecolor="gray",
+    lataxis=dict(range=[LAT_MIN-1, LAT_MAX+1]),
+    lonaxis=dict(range=[LON_MIN-1, LON_MAX+1]),
+    resolution=50
+)
+fig.update_layout(
+    title="Malla ECMWF-HRES (0.25Â°) â€“ PenÃ­nsula IbÃ©rica",
+    height=700,
+    template="plotly_white",
+    margin=dict(t=60, l=30, r=30, b=30)
+)
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ guardar y abrir â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+out_html = Path("outputs") / "visualizaciones" / "grid_ifs_hres.html"
+out_html.parent.mkdir(parents=True, exist_ok=True)
+fig.write_html(str(out_html), include_plotlyjs="cdn")
+print(f"âœ… HTML guardado en {out_html.resolve()}")
+webbrowser.open(out_html.resolve().as_uri())
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\scripts\validate_holdout.py ###
+#!/usr/bin/env python
+"""
+Valida los modelos sobre el *hold-out* (split == 'test').
+
+â€¢ Lee features.parquet con columna 'split'.
+â€¢ Carga modelos + escaladores + features_used.pkl desde --model-dir/<target>/.
+â€¢ Calcula MAE, RMSE, MAPE, RÂ² para cada target y los guarda en outputs/metrics/.
+"""
+
+from pathlib import Path
+from datetime import datetime
+import argparse, json, joblib, logging, sys
+
+import numpy as np
+import pandas as pd
+from sklearn.metrics import (
+    mean_absolute_error,
+    mean_squared_error,
+    r2_score,
+)
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ logging â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    datefmt="%H:%M:%S",
+)
+LOG = logging.getLogger(__name__)
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ mÃ©tricas â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+def rmse(y, yhat):
+    return mean_squared_error(y, yhat, squared=False)
+
+def mape(y, yhat):
+    mask = y != 0
+    return (np.abs((yhat[mask] - y[mask]) / y[mask])).mean() * 100
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ validaciÃ³n â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+def validate(df: pd.DataFrame, model_root: Path, targets: list[str]) -> dict:
+    results = {}
+    for tgt in targets:
+        tgt_dir = model_root / tgt
+        try:
+            scaler = joblib.load(tgt_dir / "scaler.joblib")
+            model  = joblib.load(tgt_dir / "model.joblib")
+            feats  = joblib.load(tgt_dir / "features_used.pkl")
+        except FileNotFoundError:
+            LOG.error("Faltan artefactos para %s en %s", tgt, tgt_dir)
+            continue
+
+        missing = set(feats) - set(df.columns)
+        if missing:
+            LOG.error("Features faltantes para %s: %s", tgt, missing)
+            continue
+
+        X = scaler.transform(df[feats])
+        y = df[tgt].values
+        yhat = model.predict(X)
+
+        results[tgt] = {
+            "MAE":  float(mean_absolute_error(y, yhat)),
+            "RMSE": float(rmse(y, yhat)),
+            "MAPE_pct": float(mape(y, yhat)),
+            "R2":  float(r2_score(y, yhat)),
+            "n":   int(len(y)),
+        }
+        LOG.info("%s  MAE=%.2f  RMSE=%.2f  MAPE=%.2f%%  RÂ²=%.3f",
+                 tgt.upper(), results[tgt]["MAE"],
+                 results[tgt]["RMSE"],
+                 results[tgt]["MAPE_pct"],
+                 results[tgt]["R2"])
+    return results
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ CLI â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+def main(config: str, model_dir: str):
+    import yaml
+    cfg = yaml.safe_load(open(config, encoding="utf-8"))
+
+    feat_path = Path(cfg["paths"]["feature_table"])
+    df = pd.read_parquet(feat_path)
+    if "split" not in df.columns:
+        sys.exit("âŒ La tabla de features no contiene columna 'split'.")
+
+    test_df = df[df["split"] == "test"].dropna()
+    if test_df.empty:
+        sys.exit("âŒ No hay filas con split=='test'.")
+
+    targets = cfg["model"]["targets"]
+    metrics = validate(test_df, Path(model_dir), targets)
+
+    # guardar JSON
+    out_dir = Path("outputs") / "metrics"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.utcnow().strftime("%Y%m%d_%H%M")
+    out_json = out_dir / f"validation_{ts}.json"
+    json.dump(metrics, out_json.open("w"), indent=2)
+    LOG.info("âœ… MÃ©tricas guardadas en %s", out_json)
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser()
+    ap.add_argument("-c", "--config", required=True, help="YAML de configuraciÃ³n")
+    ap.add_argument("-m", "--model-dir", default="models/current",
+                    help="Directorio con modelos por target")
+    main(**vars(ap.parse_args()))
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\scripts\visualize_forecast.py ###
+#!/usr/bin/env python
+"""
+HTML interactivo con el Ãºltimo pronÃ³stico de 7 dÃ­as y meteo asociada.
+Requiere: plotly (`pip install plotly`)
+"""
+
+from pathlib import Path
+import sys, webbrowser
+import pandas as pd
+import numpy as np
+import xarray as xr
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+from datetime import timedelta
+
+ROOT = Path(".")
+OUT_DIR = ROOT / "outputs"
+PROC_PARQUET = ROOT / "data" / "processed" / "dataset.parquet"
+HRES_DIR = ROOT / "data" / "raw" / "hres"
+OUT_HTML = OUT_DIR / "visualizaciones" / "forecast_last_run.html"
+OUT_HTML.parent.mkdir(parents=True, exist_ok=True)
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€ forecast (carpeta YYYYMMDDHH) â”€â”€â”€â”€â”€â”€â”€â”€â”€
+runs = sorted(
+    [p for p in OUT_DIR.iterdir()
+     if p.is_dir() and p.name.isdigit() and len(p.name) == 10],
+    key=lambda p: p.name
+)
+if not runs:
+    sys.exit("âŒ No se encontrÃ³ ninguna carpeta outputs/<YYYYMMDDHH>/")
+
+run_dir = runs[-1]
+fc_path = run_dir / "forecast_7d.csv"
+fc_df = pd.read_csv(fc_path, parse_dates=["timestamp"])
+target_cols = [c for c in fc_df.columns if c.endswith("_pred")]
+targets = [c.replace("_pred", "") for c in target_cols]
+print(f"â€¢ Forecast utilizado: {fc_path}")
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€ histÃ³ricos (Ãºltimos 7 dÃ­as) â”€â”€â”€â”€â”€â”€â”€â”€â”€
+hist_df = None
+t0_pred = fc_df["timestamp"].iloc[0]
+if PROC_PARQUET.exists():
+    hist_df = pd.read_parquet(PROC_PARQUET)
+    if "timestamp" in hist_df.columns:
+        hist_df["timestamp"] = pd.to_datetime(hist_df["timestamp"])
+        mask = (hist_df["timestamp"] >= t0_pred - timedelta(days=7)) & \
+               (hist_df["timestamp"] <  t0_pred)
+        hist_df = hist_df.loc[mask]
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€ meteorologÃ­a (NetCDF) â”€â”€â”€â”€â”€â”€â”€â”€â”€
+nc_files = sorted(HRES_DIR.glob("ifs_hres_*.nc"))
+if not nc_files:
+    sys.exit("âŒ No se encontrÃ³ ifs_hres_*.nc en data/raw/hres/")
+nc = nc_files[-1]
+ds = xr.open_dataset(nc).mean(dim=("latitude", "longitude"), keep_attrs=True)
+run_ts = pd.to_datetime(nc.stem[-10:], format="%Y%m%d%H", utc=True)
+valid = run_ts + ds["step"].astype("timedelta64[h]")
+met_df = pd.DataFrame({
+    "timestamp": valid,
+    "wind_speed": np.sqrt(ds["u10"]**2 + ds["v10"]**2).values,
+    "t2m": ds["t2m"].values,
+    "ssrd": ds["ssrd"].values / 3600.0,
+})
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€ figura interactiva â”€â”€â”€â”€â”€â”€â”€â”€â”€
+rows = len(targets) + ("wind" in targets) + ("solar" in targets) + 1
+fig = make_subplots(
+    rows=rows, cols=1, shared_xaxes=True,
+    subplot_titles=[
+        *(f"{t.capitalize()} real vs pred" for t in targets),
+        *(["Wind-speed vs eÃ³lica"] if "wind" in targets else []),
+        *(["SSRD vs solar"] if "solar" in targets else []),
+        "CorrelaciÃ³n meteo â†” pred"
+    ],
+    vertical_spacing=0.04
+)
+
+row = 1
+for tgt in targets:
+    # histÃ³rico
+    if hist_df is not None and tgt in hist_df:
+        fig.add_trace(go.Scatter(x=hist_df["timestamp"], y=hist_df[tgt],
+                                 name=f"{tgt} real",
+                                 line=dict(color="steelblue", width=1.2)),
+                      row=row, col=1)
+    # predicciÃ³n
+    fig.add_trace(go.Scatter(x=fc_df["timestamp"], y=fc_df[f"{tgt}_pred"],
+                             name=f"{tgt} pred",
+                             line=dict(color="firebrick", width=1.4)),
+                  row=row, col=1)
+    row += 1
+
+# dispersiÃ³n
+merged = pd.merge(fc_df, met_df, on="timestamp", how="inner")
+if "wind" in targets:
+    fig.add_trace(go.Scatter(
+        x=merged["wind_speed"], y=merged["wind_pred"],
+        mode="markers", marker=dict(size=5, color="darkgreen", opacity=0.6)),
+        row=row, col=1)
+    row += 1
+if "solar" in targets:
+    fig.add_trace(go.Scatter(
+        x=merged["ssrd"], y=merged["solar_pred"],
+        mode="markers", marker=dict(size=5, color="orange", opacity=0.6)),
+        row=row, col=1)
+    row += 1
+
+# heat-map
+corr_cols = ["wind_speed", "t2m", "ssrd"] + [f"{t}_pred" for t in targets]
+corr = merged[corr_cols].corr().round(2)
+fig.add_trace(go.Heatmap(z=corr.values, x=corr.columns, y=corr.index,
+                         colorscale="RdBu", zmid=0, showscale=True),
+              row=row, col=1)
+
+fig.update_layout(
+    height=350 + 250 * (rows - 1),
+    title=f"PredicciÃ³n & meteorologÃ­a â€“ run {run_dir.name}",
+    template="plotly_white",
+    showlegend=False,
+    margin=dict(t=60, l=60, r=30, b=40),
+    hovermode="closest"
+)
+
+fig.write_html(str(OUT_HTML), include_plotlyjs="cdn")
+print(f"âœ… HTML generado en {OUT_HTML.resolve()}")
+webbrowser.open(OUT_HTML.resolve().as_uri())
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\src\__init__.py ###
+"""Package root."""
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\src\analysis\compare_runs.py ###
+# src/analysis/compare_runs.py
+"""
+Compara un experimento XGBoost (u otro) frente a la persistencia-24h.
+Genera:
+  â€¢ compare_baseline.csv â€” mÃ©tricas y % de mejora
+  â€¢ improvement.png      â€” barras con Î”RMSE (%)
+Uso:
+  python -m src.analysis.compare_runs -c configs/default.yaml -r xgb_YYYYMMDD_HHMM
+"""
+from __future__ import annotations
+import argparse
+import json
+from pathlib import Path
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+import joblib
+from src.utils.yaml_cfg import load
+
+def compute_metrics(y_true: pd.Series, y_pred: pd.Series) -> tuple[float, float, float]:
+    valid = y_true.notna() & y_pred.notna()
+    y_t, y_p = y_true[valid], y_pred[valid]
+    mae  = mean_absolute_error(y_t, y_p)
+    rmse = np.sqrt(mean_squared_error(y_t, y_p))
+    nmae = mae / y_t.mean()
+    return mae, rmse, nmae
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-c", "--config", required=True)
+    parser.add_argument("-r", "--run", required=True)
+    args = parser.parse_args()
+    cfg = load(args.config)
+    df = pd.read_parquet(cfg["paths"]["feature_table"])
+    test = df.query("split=='test'")
+
+    # definir features numÃ©ricas excluyendo targets y split
+    numeric = df.select_dtypes(include=[np.number]).columns.tolist()
+    feats = [c for c in numeric if c not in (*cfg["model"]["targets"], "split")]
+
+    # cargar lÃ­nea base
+    base_csv = Path(cfg["paths"]["models"]) / "baseline" / "baseline_persist24.csv"
+    base_df = pd.read_csv(base_csv, index_col=0, parse_dates=True)
+
+    rows = []
+    for tgt in cfg["model"]["targets"]:
+        y_true = test[tgt]
+        y_pred_b = base_df[f"{tgt}_pred"].reindex_like(y_true)
+        mae_b, rmse_b, nmae_b = compute_metrics(y_true, y_pred_b)
+
+        model_dir = Path(cfg["paths"]["models"]) / args.run / tgt
+        model  = joblib.load(model_dir / "model.joblib")
+        scaler = joblib.load(model_dir / "scaler.joblib")
+        X = scaler.transform(test[feats])
+        y_pred_m = pd.Series(model.predict(X), index=test.index)
+        mae_m, rmse_m, nmae_m = compute_metrics(y_true, y_pred_m)
+
+        rows.append({
+            "target": tgt,
+            "mae_base": mae_b, "mae_model": mae_m,
+            "rmse_base": rmse_b, "rmse_model": rmse_m,
+            "nmae_base": nmae_b, "nmae_model": nmae_m
+        })
+
+    res = pd.DataFrame(rows)
+    res["mae_improv_%"]  = 100*(res["mae_base"] - res["mae_model"])/res["mae_base"]
+    res["rmse_improv_%"] = 100*(res["rmse_base"] - res["rmse_model"])/res["rmse_base"]
+
+    out_dir = Path(cfg["paths"]["models"]) / args.run
+    res.to_csv(out_dir / "compare_baseline.csv", index=False)
+
+    plt.figure(figsize=(6,3))
+    plt.bar(res["target"], res["rmse_improv_%"])
+    plt.ylabel("Î”RMSE vs persistencia (%)")
+    plt.title("Mejora relativa del modelo")
+    plt.tight_layout()
+    plt.savefig(out_dir / "improvement.png", dpi=150)
+    plt.close()
+
+    print("\nComparativa vs persistencia-24h:\n")
+    print(res.to_string(index=False))
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\src\analysis\error_breakdown.py ###
+# src/analysis/error_breakdown.py
+"""
+DiagnÃ³stico de error para un experimento XGBoost.
+
+Genera para cada target:
+  â€¢ <run>/diagnostics/<tgt>_<group>_rmse.csv
+  â€¢ <run>/diagnostics/<tgt>_<group>_rmse.png
+
+Grupos (--group / -g):
+  hour | month | wind_bin
+"""
+from __future__ import annotations
+import argparse
+from pathlib import Path
+import warnings
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import joblib
+from sklearn.metrics import mean_squared_error
+from src.utils.yaml_cfg import load
+
+
+def rmse(a: np.ndarray, b: np.ndarray) -> float:
+    m = ~np.isnan(a) & ~np.isnan(b)
+    return np.sqrt(mean_squared_error(a[m], b[m])) if m.any() else np.nan
+
+
+def pred_for_target(run_dir: Path, tgt: str, test_df: pd.DataFrame, feats: list[str]) -> pd.Series:
+    model  = joblib.load(run_dir / tgt / "model.joblib")
+    scaler = joblib.load(run_dir / tgt / "scaler.joblib")
+    X      = scaler.transform(test_df[feats])
+    return pd.Series(model.predict(X), index=test_df.index, name="pred")
+
+
+def _ensure_tz(idx: pd.DatetimeIndex) -> pd.DatetimeIndex:
+    if idx.tz is None:
+        idx = idx.tz_localize("UTC")
+    return idx.tz_convert("Europe/Madrid")
+
+
+def group_key(df: pd.DataFrame, group: str) -> pd.Series:
+    if group == "hour":
+        hours = _ensure_tz(df.index).hour
+        return pd.Series(hours, index=df.index, name="group")
+    if group == "month":
+        months = _ensure_tz(df.index).month
+        return pd.Series(months, index=df.index, name="group")
+    if group == "wind_bin":
+        if {"u10", "v10"}.issubset(df.columns):
+            v = np.hypot(df["u10"], df["v10"])
+            bins = [0, 4, 8, 12, 16, 20, 25, np.inf]
+            labels = ["0â€“4", "4â€“8", "8â€“12", "12â€“16", "16â€“20", "20â€“25", "25+"]
+            cats = pd.cut(v, bins=bins, labels=labels, right=False)
+            return pd.Series(cats, index=df.index, name="group")
+        warnings.warn("Columnas u10/v10 no encontradas; 'wind_bin' omitido.")
+        return pd.Series(np.nan, index=df.index, name="group")
+    raise ValueError(f"Grupo no soportado: {group}")
+
+
+def breakdown(config: str, run: str, group: str) -> None:
+    cfg      = load(config)
+    run_dir  = Path(cfg["paths"]["models"]) / run
+    df       = pd.read_parquet(cfg["paths"]["feature_table"])
+    test_df  = df.query("split == 'test'").copy()
+
+    # Solo features numÃ©ricas, excluyendo targets y split
+    numeric_cols = test_df.select_dtypes(include=[np.number]).columns.tolist()
+    feat_cols    = [c for c in numeric_cols if c not in (*cfg["model"]["targets"], "split")]
+
+    out_dir = run_dir / "diagnostics"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    for tgt in cfg["model"]["targets"]:
+        print(f"â†’ DiagnÃ³stico {tgt.upper()} por {group}")
+        y_true = test_df[tgt]
+        y_pred = pred_for_target(run_dir, tgt, test_df, feat_cols)
+        gkey   = group_key(test_df, group)
+
+        df_grp = (
+            pd.concat({"obs": y_true, "pred": y_pred, "key": gkey}, axis=1)
+              .dropna(subset=["key"])
+              .groupby("key")
+              .apply(lambda x: rmse(x["obs"].values, x["pred"].values))
+              .rename("rmse")
+        )
+
+        csv_path = out_dir / f"{tgt}_{group}_rmse.csv"
+        df_grp.to_csv(csv_path, header=True)
+
+        plt.figure(figsize=(8, 3))
+        df_grp.plot.bar()
+        plt.ylabel("RMSE")
+        plt.xlabel(group)
+        plt.title(f"{tgt.upper()} â€“ RMSE por {group}")
+        plt.tight_layout()
+        plt.savefig(out_dir / f"{tgt}_{group}_rmse.png", dpi=150)
+        plt.close()
+
+        print(f"  Guardado {csv_path}")
+
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser()
+    ap.add_argument("-c", "--config", required=True)
+    ap.add_argument("-r", "--run",    required=True)
+    ap.add_argument("-g", "--group",  choices=["hour", "month", "wind_bin"], default="hour")
+    args = ap.parse_args()
+    breakdown(args.config, args.run, args.group)
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\src\analysis\shap_local.py ###
+# src/analysis/shap_local.py
+"""
+Crea explicaciones locales (force_plot) de SHAP
+para los N peores errores de un target.
+
+Guarda HTML en models/<run>/<target>/shap_local/
+Uso (una lÃ­nea):
+  python -m src.analysis.shap_local -c configs/default.yaml -r xgb_YYYYMMDD_HHMM -t wind -n 10
+"""
+from __future__ import annotations
+import argparse
+from pathlib import Path
+
+# Parche NumPyâ‰¥2.0
+from src.utils.numpy_patch import *  # debe ir antes de shap
+import joblib
+import pandas as pd
+import shap
+from src.utils.yaml_cfg import load
+
+def main(config: str, run: str, target: str, top_n: int) -> None:
+    cfg    = load(config)
+    df     = pd.read_parquet(cfg["paths"]["feature_table"])
+    test   = df.query("split == 'test'")
+    # Solo features numÃ©ricas:
+    numeric = df.select_dtypes(include=[float, int]).columns.tolist()
+    feats   = [c for c in numeric if c not in (*cfg["model"]["targets"], "split")]
+
+    model_dir = Path(cfg["paths"]["models"]) / run / target
+    out_dir   = model_dir / "shap_local"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    model  = joblib.load(model_dir / "model.joblib")
+    scaler = joblib.load(model_dir / "scaler.joblib")
+    X_test = scaler.transform(test[feats])
+
+    # calcula errores y selecciona worst
+    preds     = model.predict(X_test)
+    errors    = abs(preds - test[target].values)
+    worst_idx = errors.argsort()[-top_n:][::-1]
+
+    explainer = shap.TreeExplainer(model)
+    shap_vals = explainer.shap_values(X_test[worst_idx], check_additivity=False)
+
+    for rank, idx in enumerate(worst_idx, start=1):
+        fp = shap.force_plot(
+            explainer.expected_value,
+            shap_vals[rank-1],
+            X_test[idx],
+            feature_names=feats,
+            matplotlib=False,
+        )
+        html_path = out_dir / f"case_{rank:02d}_idx{idx}.html"
+        shap.save_html(str(html_path), fp)
+        print(f"  Guardado: {html_path}")
+
+if __name__ == "__main__":
+    p = argparse.ArgumentParser()
+    p.add_argument("-c", "--config", required=True, help="Ruta YAML config")
+    p.add_argument("-r", "--run",    required=True, help="ID del run (p.ej. xgb_YYYYMMDD_HHMM)")
+    p.add_argument("-t", "--target", required=True, choices=["wind", "solar_pv", "demand"])
+    p.add_argument("-n", "--top_n",  type=int, default=10, help="NÃºmero de casos a explicar")
+    main(**vars(p.parse_args()))
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\src\analysis\shap_summary.py ###
+# src/analysis/shap_summary.py
+"""
+Genera summary_plot de SHAP para cada target y guarda las figuras PNG en
+models/<run>/shap/.
+
+Uso (una sola lÃ­nea):
+  python -m src.analysis.shap_summary -c configs/default.yaml -r xgb_YYYYMMDD_HHMM
+"""
+from __future__ import annotations
+import argparse
+from pathlib import Path
+
+# Parche para NumPy â‰¥2.0
+from src.utils.numpy_patch import *
+import matplotlib
+matplotlib.use("Agg")  # backend sin GUI
+
+import matplotlib.pyplot as plt
+import joblib
+import pandas as pd
+import shap
+from src.utils.yaml_cfg import load
+
+
+def main(config: str, run: str) -> None:
+    cfg   = load(config)
+    df    = pd.read_parquet(cfg["paths"]["feature_table"])
+    test  = df.query("split == 'test'")
+    # Solo features numÃ©ricas, excluyendo targets y split
+    numeric = df.select_dtypes(include=[float, int]).columns.tolist()
+    feats   = [c for c in numeric if c not in (*cfg["model"]["targets"], "split")]
+
+    out_dir = Path(cfg["paths"]["models"]) / run / "shap"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    for tgt in cfg["model"]["targets"]:
+        print(f"â†’ Generando SHAP summary para {tgt}")
+        mdir   = Path(cfg["paths"]["models"]) / run / tgt
+        model  = joblib.load(mdir / "model.joblib")
+        scaler = joblib.load(mdir / "scaler.joblib")
+        X_test = scaler.transform(test[feats])
+
+        explainer = shap.TreeExplainer(model)
+        shap_vals = explainer.shap_values(X_test, check_additivity=False)
+
+        shap.summary_plot(
+            shap_vals,
+            X_test,
+            feature_names=feats,
+            show=False,
+            max_display=20,
+            plot_size=(8, 3),
+            title=f"{tgt.upper()} â€“ SHAP global",
+        )
+
+        fig_path = out_dir / f"{tgt}_shap_summary.png"
+        plt.savefig(fig_path, dpi=150, bbox_inches="tight")
+        plt.close()
+        print(f"  Figura guardada: {fig_path}")
+
+
+if __name__ == "__main__":
+    p = argparse.ArgumentParser()
+    p.add_argument("-c", "--config", required=True)
+    p.add_argument("-r", "--run",    required=True)
+    main(**vars(p.parse_args()))
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\src\data\cds_client.py ###
+# src/data/cds_client.py
+# MIT Â© 2025 MSc Candidate
+"""
+Cliente robusto para ERA5 / ERA5-Land (Copernicus CDS).
+
+â€¢ Sub-conjunto geogrÃ¡fico (area / grid)                â€¢ CachÃ© mensual en disco
+â€¢ ValidaciÃ³n rÃ¡pida de cada NetCDF                    â€¢ Salida â†’ data/raw/cds/<var>/<YYYY-MM>.nc
+"""
+
+from __future__ import annotations
+
+import calendar
+import json
+import logging
+import os
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Sequence
+
+import cdsapi
+import pandas as pd
+import xarray as xr
+from dotenv import load_dotenv
+from requests import HTTPError
+
+load_dotenv()
+_LOGGER = logging.getLogger(__name__)
+
+
+class CDSClient:
+    """Wrapper cdsapi con cachÃ©, Ã¡rea y grid."""
+
+    def __init__(
+        self,
+        out_dir: Path | str = Path("data/raw/cds"),
+        key: str | None = None,
+        timeout: int = 3000,
+    ) -> None:
+        self._home = Path(out_dir).expanduser()
+        self._home.mkdir(parents=True, exist_ok=True)
+
+        # â”€â”€â”€ credenciales â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        key = key or os.getenv("CDS_API_KEY")          # ~/.cdsapirc preferente
+        if key:
+            os.environ["CDSAPI_URL"] = "https://cds.climate.copernicus.eu/api"
+            os.environ["CDSAPI_KEY"] = key
+        # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+        self._c = cdsapi.Client(timeout=timeout)
+
+    # =================================================================
+    def download(
+        self,
+        cfg: Dict[str, str] | Sequence[Dict[str, str]],
+        start: datetime,
+        end: datetime,
+    ) -> List[Path]:
+        cfgs = cfg if isinstance(cfg, list) else [cfg]
+        paths: list[Path] = []
+        for spec in cfgs:
+            paths.extend(self._download_one(spec, start, end))
+        return paths
+
+    # --------------------------- interno -----------------------------
+    def _download_one(
+        self,
+        spec: Dict[str, str],
+        start: datetime,
+        end: datetime,
+    ) -> List[Path]:
+        months = _month_stubs(start, end)
+        out_files: list[Path] = []
+
+        for ym in months:
+            year, month = ym.split("-")
+            fn = self._home / spec["name"] / f"{ym}.nc"
+
+            if fn.exists():
+                _LOGGER.info("âœ“ %s existe â€“ omitido", fn.name)
+                out_files.append(fn)
+                continue
+
+            _LOGGER.info("ERA5 %s %s â€“ descargaâ€¦", spec["name"], ym)
+            fn.parent.mkdir(parents=True, exist_ok=True)
+
+            # ----------- request ------------------------------------
+            n_days = calendar.monthrange(int(year), int(month))[1]
+            req = {
+                "product_type": "reanalysis",
+                "variable": [spec["short_name"]],
+                "year": year,
+                "month": month,
+                "day": [f"{d:02d}" for d in range(1, n_days + 1)],
+                "time": [f"{h:02d}:00" for h in range(24)],
+                "format": "netcdf",
+            }
+
+            for k in ("area", "grid"):
+                if k in spec:
+                    val = spec[k]
+                    req[k] = "/".join(map(str, val)) if isinstance(val, (list, tuple)) else val
+
+            req |= spec.get("extras", {})
+            _LOGGER.debug("REQUEST JSON â†’\n%s", json.dumps(req, indent=2))
+
+            # ------------------ descarga con manejo de errores ------------------
+            try:
+                self._c.retrieve(spec["dataset"], req, str(fn))
+            except HTTPError as e:
+                # El cuerpo del 400 suele traer la clave 'error' con detalle
+                _LOGGER.error("CDS 400 Bad Request (%s):\n%s", spec["name"], e.response.text)
+                raise
+
+            # ------------------ validaciÃ³n rÃ¡pida ------------------------------
+            if not _is_netcdf_ok(fn):
+                _LOGGER.warning("%s corrupto â†’ reintento 1/1", fn.name)
+                fn.unlink(missing_ok=True)
+                self._c.retrieve(spec["dataset"], req, str(fn))
+                if not _is_netcdf_ok(fn):
+                    raise RuntimeError(f"NetCDF corrupto tras reintento: {fn}")
+
+            out_files.append(fn)
+
+        return out_files
+
+
+# =====================================================================
+def _is_netcdf_ok(path: Path) -> bool:
+    try:
+        xr.open_dataset(path, engine="h5netcdf").close()
+        return True
+    except Exception as exc:
+        _LOGGER.error("NetCDF invÃ¡lido (%s): %s", path.name, exc)
+        return False
+
+
+def _month_stubs(start: datetime, end: datetime) -> list[str]:
+    start = start.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    end   = end.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+    months: list[str] = []
+    cur = start
+    while cur <= end:
+        months.append(cur.strftime("%Y-%m"))
+        cur = (cur.replace(day=28) + pd.Timedelta(days=4)).replace(day=1)  # +1 mes
+    return months
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\src\data\check_raw_integrity.py ###
+"""Valida la presencia de todos los ficheros brutos requeridos (ESIOS + ERA5)."""
+from __future__ import annotations
+from pathlib import Path
+from datetime import datetime, timedelta
+import yaml, logging, sys
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+RAW = Path("data/raw")
+
+def _expected_dates(start: datetime, end: datetime):
+    d = start
+    while d <= end:
+        yield d.strftime("%Y-%m-%d")
+        d += timedelta(days=1)
+
+def main(cfg_path: str = "configs/default.yaml"):
+    cfg = yaml.safe_load(open(cfg_path))
+    s = datetime.fromisoformat(cfg["data"]["start_date"].replace("Z", ""))
+    e = datetime.fromisoformat(cfg["data"]["end_date"].replace("Z", ""))
+
+    # --- ESIOS ----------------------------------------------------------------
+    esios_root = RAW / "esios"
+    all_json = {p.stem for p in esios_root.glob("**/*.json")}  # recursivo
+    miss_esios = [d + ".json" for d in _expected_dates(s, e) if d not in all_json]
+
+    logging.info("ESIOS faltantes: %d", len(miss_esios))
+    for f in miss_esios[:5]:
+        logging.info("  %s...", f)
+
+    # --- ERA5 -----------------------------------------------------------------
+    miss_era5 = []
+    for spec in cfg["variables"]["era5"]:
+        name = spec["name"]
+        p = RAW / "era5" / name
+        cur = s.replace(day=1)
+        while cur <= e:
+            fn = p / f"{cur:%Y-%m}.nc"
+            if not fn.exists():
+                miss_era5.append(fn.relative_to(RAW))
+            # avanzar al mes siguiente
+            nxt = (cur.replace(day=28) + timedelta(days=4)).replace(day=1)
+            cur = nxt
+    logging.info("ERA5 faltantes: %d", len(miss_era5))
+    for f in miss_era5[:5]:
+        logging.info("  %s...", f)
+
+    if miss_esios or miss_era5:
+        sys.exit("âŒ  Faltan ficheros â€” completa la cachÃ© antes de continuar.")
+    print("âœ…  CachÃ© ESIOS + ERA5 completa.")
+
+if __name__ == "__main__":
+    main()
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\src\data\debug_esios.py ###
+# src/data/debug_esios.py
+"""
+Herramienta de depuraciÃ³n para la API de eÂ·sios.
+
+USO â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+python -m src.data.debug_esios 551 2025-07-05          # ID y fecha Ãºnica
+python -m src.data.debug_esios 551 2025-07-05 2025-07-06
+python -m src.data.debug_esios search "solar fotovoltaica"
+python -m src.data.debug_esios scan 540 560
+"""
+from dotenv import load_dotenv, find_dotenv   # â† nuevo
+load_dotenv(find_dotenv())                    # â† nuevo
+import os, sys, json, requests, datetime as dt
+from textwrap import indent
+
+BASE = "https://api.esios.ree.es"
+HDRS = {
+    #  v2 sigue aceptando v1
+    "Accept": "application/json; application/vnd.esios-api-v1+json",
+    "x-api-key": os.getenv("ESIOS_TOKEN", ""),
+}
+
+def _req(path: str, params=None):
+    r = requests.get(f"{BASE}{path}", headers=HDRS, params=params or {})
+    if r.status_code == 403:
+        raise SystemExit("403 Forbidden â†’ token ausente, caducado o cabeceras incorrectas")
+    r.raise_for_status()
+    return r.json()
+
+def show_values(ind: int, d0: str, d1: str | None):
+    d1 = d1 or d0
+    j = _req(f"/indicators/{ind}",
+             {"start_date": f"{d0}T00:00:00Z",
+              "end_date":   f"{d1}T23:00:00Z",
+              "time_trunc": "hour"})
+    vals = j["indicator"]["values"]
+    print(f"{ind=}  rows={len(vals)}")
+    if vals:
+        print(indent(json.dumps(vals[:3], indent=2), "  "))
+
+def search(term: str, limit=10):
+    res = _req("/indicators", {"search": term, "page_size": limit})
+    for x in res["indicators"]:
+        print(f"{x['id']:>6}  {x['short_name'][:60]}")
+
+def scan(lo: int, hi: int, date="2025-07-05"):
+    for ind in range(lo, hi + 1):
+        try:
+            show_values(ind, date, date)
+        except requests.HTTPError as e:
+            print(f"{ind}: {e.response.status_code}")
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        sys.exit("Argumentos insuficientes")
+    if sys.argv[1] == "search":
+        search(" ".join(sys.argv[2:]))
+    elif sys.argv[1] == "scan":
+        scan(int(sys.argv[2]), int(sys.argv[3]))
+    else:
+        ind = int(sys.argv[1])
+        d0  = sys.argv[2]
+        d1  = sys.argv[3] if len(sys.argv) > 3 else None
+        show_values(ind, d0, d1)
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\src\data\describe_dataset.py ###
+# src/data/describe_dataset.py
+"""
+Visualiza un resumen rÃ¡pido del dataset procesado.
+
+Uso
+â”€â”€â”€â”€
+python -m src.data.describe_dataset -c configs/default.yaml [-n 10]
+"""
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+from textwrap import indent
+
+import pandas as pd
+import yaml
+
+
+def load_cfg(path: str | Path) -> dict:
+    with open(path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
+def main(config: str, n_rows: int = 10) -> None:
+    cfg = load_cfg(config)
+    parq = Path(cfg["paths"]["processed_dir"]) / "dataset.parquet"
+
+    if not parq.exists():
+        raise FileNotFoundError(f"No se encontrÃ³ {parq.resolve()}")
+
+    df = pd.read_parquet(parq)
+
+    # Asegura que 'timestamp' es datetime-UTC si estÃ¡ presente
+    if "timestamp" in df.columns:
+        df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+
+    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ salida â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    print("Resumen general".center(80, "â”€"))
+    print(f"Filas totales : {len(df):,}")
+    print(f"Columnas      : {df.shape[1]} â†’ {', '.join(df.columns)}")
+    if "timestamp" in df.columns:
+        print(f"Rango fechas  : {df['timestamp'].min()}  â†’  {df['timestamp'].max()}")
+
+    print("\nValores nulos por columna".center(80, "â”€"))
+    print(df.isna().sum().to_string())
+
+    print(f"\nPrimeras {n_rows} filas".center(80, "â”€"))
+    print(df.head(n_rows).to_string(index=False))
+
+    print("\nEstadÃ­sticos bÃ¡sicos (numÃ©ricos)".center(80, "â”€"))
+    # Compatibilidad pandas 1.x / 2.x: datetime_is_numeric sÃ³lo existe en 1.x
+    try:
+        stats = df.describe(datetime_is_numeric=True)
+    except TypeError:
+        stats = df.select_dtypes("number").describe()
+    print(indent(stats.to_string(), "  "))
+
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser()
+    ap.add_argument("-c", "--config", required=True, help="Ruta del YAML.")
+    ap.add_argument("-n", "--n_rows", type=int, default=10, help="Filas a mostrar.")
+    main(**vars(ap.parse_args()))
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\src\data\esios_client.py ###
+# src/data/esios_client.py
+# MIT Â© 2025 MSc Candidate
+"""
+Cliente robusto para la API de ESIOS (y fallback a apidados.ree.es).
+
+CaracterÃ­sticas
+â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+â€¢ AutenticaciÃ³n por x-api-key (si la hay)               â€¢ time_trunc=hour
+â€¢ Back-off exponencial + reintentos (429 / 5xx)         â€¢ Fallback a API pÃºblica
+â€¢ Troceo â‰¤ 24 h UTC                                     â€¢ CachÃ© JSON por dÃ­a
+â€¢ Ãndice horario tz-aware sin duplicados                â€¢ Logs legibles
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import time
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Any, Dict, List
+
+import pandas as pd
+import requests
+from dotenv import load_dotenv
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+load_dotenv()
+_LOGGER = logging.getLogger(__name__)
+BASE_PRIV = "https://api.esios.ree.es"
+BASE_PUB  = "https://apidatos.ree.es"        # fallback sin token
+CACHE_DIR = Path("data/raw/esios")           # se crea al vuelo
+HEADERS_BASE = {
+    "Accept": "application/json; application/vnd.esios-api-v2+json",
+    "Content-Type": "application/json",
+}
+IDS: dict[str, int] = {
+    "wind": 551,
+    "solar_pv": 10206,
+    "demand": 1293,
+}
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+
+def _chunks_day(start: datetime, end: datetime) -> list[tuple[datetime, datetime]]:
+    """Ventanas de 24 h UTC exactas (requisito API)."""
+    cur, out = start, []
+    while cur <= end:
+        nxt = min(cur + timedelta(hours=23), end)
+        out.append((cur, nxt))
+        cur = (nxt + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+    return out
+
+
+def _json_to_df(values: List[Dict[str, Any]]) -> pd.DataFrame:
+    """Lista de valores â†’ DataFrame UTC; tolera lista vacÃ­a."""
+    if not values:
+        return pd.DataFrame(columns=["mw"])
+    df = pd.DataFrame(values)
+    ts_col = next((c for c in ("datetime", "datetime_utc", "date", "timestamp") if c in df), None)
+    if ts_col is None:
+        raise ValueError(f"Timestamp no encontrado en {df.columns.tolist()}")
+    df["ts"] = pd.to_datetime(df[ts_col], utc=True, errors="coerce")
+    df.set_index("ts", inplace=True)
+    val_col = next((c for c in df.columns if c.endswith("value")), "value")
+    return df[[val_col]].rename(columns={val_col: "mw"})
+
+
+def _dedup(df: pd.DataFrame) -> pd.DataFrame:
+    """Elimina duplicados de Ã­ndice manteniendo la 1.Âª apariciÃ³n."""
+    return df[~df.index.duplicated(keep="first")]
+
+
+class EsiosClient:
+    """Cliente resiliente para series horarias de ESIOS."""
+
+    def __init__(self, token: str | None = None) -> None:
+        self.api_key = token or os.getenv("ESIOS_API_KEY") or os.getenv("ESIOS_TOKEN")
+        self._session = self._build_session()
+
+    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ public â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    def fetch_series(self, start: datetime, end: datetime, technology: str = "wind") -> pd.DataFrame:
+        ind_id = IDS[technology]
+        frames: list[pd.DataFrame] = []
+        for s, e in _chunks_day(start, end):
+            chunk = self._get_day(ind_id, s, e)
+            if not chunk.empty:
+                frames.append(chunk)
+        if not frames:
+            _LOGGER.warning("Sin datos %s entre %s y %s", technology, start, end)
+            return pd.DataFrame(columns=[technology])
+        df = (
+            pd.concat(frames).sort_index()
+            .tz_convert("Europe/Madrid")
+            .pipe(_dedup)
+            .rename(columns={"mw": technology})
+        )
+        return df
+
+    # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ internal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    def _build_session(self) -> requests.Session:
+        """SesiÃ³n con retry exponencial."""
+        retry_cfg = Retry(
+            total=6,
+            backoff_factor=0.7,                     # 0.7, 1.4, 2.8, â€¦
+            status_forcelist=(429, 500, 502, 503, 504),
+            allowed_methods=["GET"],
+            raise_on_status=False,
+        )
+        s = requests.Session()
+        s.mount("https://", HTTPAdapter(max_retries=retry_cfg))
+        return s
+
+    def _headers(self) -> Dict[str, str]:
+        return HEADERS_BASE | ({"x-api-key": self.api_key} if self.api_key else {})
+
+    # -------------- cachÃ© --------------
+    def _cache_file(self, ind: int, day: datetime) -> Path:
+        day_str = day.strftime("%Y-%m-%d")
+        p = CACHE_DIR / str(ind) / f"{day_str}.json"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        return p
+
+    def _load_cache(self, ind: int, day: datetime) -> list | None:
+        p = self._cache_file(ind, day)
+        if p.exists():
+            with p.open("r", encoding="utf-8") as fh:
+                return json.load(fh)
+        return None
+
+    def _save_cache(self, ind: int, day: datetime, payload: list) -> None:
+        p = self._cache_file(ind, day)
+        with p.open("w", encoding="utf-8") as fh:
+            json.dump(payload, fh)
+
+    # -------------- fetch --------------
+    def _get_day(self, ind: int, s: datetime, e: datetime) -> pd.DataFrame:
+        """Descarga un bloque de â‰¤24 h con cachÃ© y fallback."""
+        cached = self._load_cache(ind, s)
+        if cached is not None:
+            return _json_to_df(cached)
+
+        url_priv = self._build_url(BASE_PRIV, ind, s, e)
+        resp = self._session.get(url_priv, headers=self._headers(), timeout=30)
+
+        # fallback si token caducÃ³ o demasiados 5xx
+        if resp.status_code in (401, 403) or resp.status_code >= 500:
+            _LOGGER.warning("FallÃ³ %s â†’ %s, probando API pÃºblica", url_priv, resp.status_code)
+            url_pub = self._build_url(BASE_PUB, ind, s, e)
+            resp = self._session.get(url_pub, headers=HEADERS_BASE, timeout=30)
+
+        resp.raise_for_status()
+        payload = resp.json()["indicator"]["values"]
+        self._save_cache(ind, s, payload)
+        return _json_to_df(payload)
+
+    @staticmethod
+    def _build_url(base: str, ind: int, s: datetime, e: datetime) -> str:
+        return (
+            f"{base}/indicators/{ind}"
+            f"?start_date={s:%Y-%m-%dT%H:%M:%SZ}"
+            f"&end_date={e:%Y-%m-%dT%H:%M:%SZ}"
+            "&time_trunc=hour"
+        )
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\src\data\interp_time.py ###
+#!/usr/bin/env python
+"""
+Convierte cualquier fichero HRES (.nc o .grib2) a resoluciÃ³n 15 min
+creando <nombre>_15min.nc en el mismo directorio.
+"""
+from pathlib import Path
+import sys, xarray as xr, numpy as np
+
+short_names = ("10u", "10v", "2t", "ssrd")  # amplÃ­a si aÃ±ades mÃ¡s vars
+
+
+def open_hres(path: Path) -> xr.Dataset:
+    """
+    â€¢ Si es NetCDF clÃ¡sico â†’ engine='netcdf4'.
+    â€¢ Si no, abre cada shortName con cfgrib y fusiona.
+    """
+    try:                                       # intento NetCDF4
+        return xr.open_dataset(path, engine="netcdf4")
+    except Exception:
+        def _load(short):
+            return xr.open_dataset(
+                path,
+                engine="cfgrib",
+                backend_kwargs={
+                    "filter_by_keys": {"shortName": short},
+                    "indexpath": "",
+                },
+            ).drop_vars("heightAboveGround", errors="ignore")
+
+        ds = xr.merge([_load(s) for s in short_names], compat="override")
+
+        # grib â†’ pasar de 'time' + 'step' a eje horario 'valid_time'
+        vtime = ds["time"] + ds["step"]
+        ds = ds.assign_coords(valid_time=("step", vtime)).swap_dims(step="valid_time")
+        ds = ds.drop_vars(["time", "step"])
+        return ds
+
+
+def main(fname: str) -> None:
+    src = Path(fname)
+    ds  = open_hres(src)
+
+    # Resamplea todas las variables numÃ©ricas a 15 min (linear)
+    ds15 = ds.resample(valid_time="15min").interpolate("linear")
+
+    out = src.with_name(src.stem + "_15min.nc")
+    ds15.to_netcdf(out, encoding={v: {"zlib": True, "complevel": 3} for v in ds15})
+    print("âœ“ creado", out)
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        sys.exit("Uso:  python src/data/interp_time.py <archivo_hres>")
+    main(sys.argv[1])
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\src\data\make_dataset.py ###
+# src/data/make_dataset.py
+from __future__ import annotations
+
+import argparse
+import logging
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import List
+
+import pandas as pd
+import xarray as xr
+import yaml
+from tqdm import tqdm
+
+from src.data.cds_client import CDSClient
+from src.data.esios_client import EsiosClient  # asume que internamente mapea 'technology' a los nuevos IDs
+from src.utils.logger import init_logger
+
+init_logger()
+_LOGGER = logging.getLogger(__name__)
+
+def _parse_dates(cfg: dict) -> tuple[datetime, datetime]:
+    start = pd.Timestamp(cfg["data"]["start_date"], tz="UTC").to_pydatetime()
+    end   = pd.Timestamp(cfg["data"]["end_date"],   tz="UTC").to_pydatetime()
+    return start, end
+
+def _open_many_nc(nc_paths: list[Path]) -> xr.Dataset:
+    def _drop_expver(ds: xr.Dataset) -> xr.Dataset:
+        if "expver" in ds.dims:
+            ds = ds.sel(expver=ds.expver.max()).drop_vars("expver")
+        return ds
+
+    return xr.open_mfdataset(
+        [str(p) for p in nc_paths],
+        combine="by_coords",
+        preprocess=_drop_expver,
+        compat="override",
+        coords="minimal",
+        parallel=True,
+        engine="h5netcdf",
+    )
+
+def main(config: str) -> None:
+    with open(config, "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+
+    raw_dir = Path(cfg["paths"]["raw_dir"])
+    raw_dir.mkdir(parents=True, exist_ok=True)
+
+    start, end = _parse_dates(cfg)
+
+    # â”€â”€ ESIOS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    esios = EsiosClient()
+    tech_cols = ["wind", "solar_pv", "demand"]
+    dfs: list[pd.DataFrame] = []
+
+    for tech in tqdm(tech_cols, desc="ESIOS", unit="tech"):
+        _LOGGER.info("Descargando %s â€¦", tech)
+        df_tech = esios.fetch_series(start, end, technology=tech)
+        # fetch_series debe devolver un DataFrame con columna 'mw'
+        dfs.append(df_tech.rename(columns={"mw": tech}))
+
+    df_gen = pd.concat(dfs, axis=1)
+
+    # â”€â”€ ERA5 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    cds = CDSClient(Path(cfg["paths"]["raw_dir"]) / "era5")
+    nc_paths = cds.download(cfg["variables"]["era5"], start, end)
+    _LOGGER.info("Abriendo %d NetCDF ERA5â€¦", len(nc_paths))
+    ds = _open_many_nc(nc_paths)
+
+    spain = ds.sel(latitude=slice(44, 36), longitude=slice(-10, 5)).mean(["latitude", "longitude"])
+    df_met = spain.to_dataframe()
+    df_met.index = (
+        df_met.index
+        .tz_localize(timezone.utc, nonexistent="shift_forward")
+        .tz_convert("Europe/Madrid")
+    )
+
+    # â”€â”€ Merge y guardado â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    df = df_gen.join(df_met, how="inner")
+    out_dir = Path(cfg["paths"]["processed_dir"])
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_file = out_dir / "initial_dataset.parquet"
+    df.to_parquet(out_file)
+    _LOGGER.info("Dataset completo hasta 30 junio: %d filas, guardado en %s", len(df), out_file)
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Build full dataset until cutoff date.")
+    parser.add_argument("--config", "-c", required=True, help="Ruta del YAML de configuraciÃ³n.")
+    main(**vars(parser.parse_args()))
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\src\data\merge_all.py ###
+# src/data/merge_all.py
+"""
+Une el dataset inicial (initial_dataset.parquet) â€”que contiene ERA5+ESIOS hasta el corteâ€”
+con las actualizaciones hechas por update_dataset, guardando el resultado final en dataset.parquet.
+"""
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
+import pandas as pd
+
+from src.utils.yaml_cfg import load  # tu util para cargar YAML
+
+def main(config: str) -> None:
+    # 1) carga la configuraciÃ³n
+    cfg = load(config)
+    processed_dir = Path(cfg["paths"]["processed_dir"])
+    initial_file = processed_dir / "initial_dataset.parquet"
+    final_file   = processed_dir / "dataset.parquet"
+
+    # 2) lee el parquet inicial (que ya incluye las actualizaciones)
+    df = pd.read_parquet(initial_file)
+
+    # 3) simplemente lo vuelca como dataset.parquet final
+    final_file.parent.mkdir(exist_ok=True, parents=True)
+    df.to_parquet(final_file, index=False)
+
+    print(f"âœ“ Dataset final guardado en {final_file} ({len(df)} filas).")
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Merge all processed data into one file")
+    parser.add_argument(
+        "-c", "--config",
+        required=True,
+        help="Ruta al YAML de configuraciÃ³n"
+    )
+    args = parser.parse_args()
+    main(**vars(args))
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\src\data\update_dataset.py ###
+# src/data/update_dataset.py
+"""
+Incremental updater â€“ aÃ±ade datos desde initial_dataset.parquet hasta ahora.
+"""
+from __future__ import annotations
+
+import os
+import argparse
+from datetime import timedelta
+from pathlib import Path
+
+import pandas as pd
+import requests
+from dotenv import load_dotenv, find_dotenv
+
+from src.utils.yaml_cfg import load  # tu cargador de YAML
+
+load_dotenv(find_dotenv())
+
+# IDs ESIOS segÃºn default.yaml
+IDS_ESIOS = {"wind": 551, "solar_pv": 2044, "demand": 1}
+
+
+def latest_time(parquet_path: Path) -> pd.Timestamp:
+    """Detecta la Ãºltima hora ya descargada, examinando columna o Ã­ndice."""
+    df = pd.read_parquet(parquet_path)
+    if "timestamp" in df.columns:
+        ts = pd.to_datetime(df["timestamp"], utc=True)
+        return ts.max().tz_convert("UTC")
+    idx = df.index
+    if isinstance(idx, pd.DatetimeIndex):
+        if idx.tz is None:
+            idx = idx.tz_localize("UTC")
+        return idx.max().tz_convert("UTC")
+    if "index" in df.columns:
+        ts = pd.to_datetime(df["index"], utc=True)
+        return ts.max().tz_convert("UTC")
+    raise KeyError("No se encontrÃ³ ni 'timestamp' ni DatetimeIndex en el parquet")
+
+
+def fetch_esios(ind: int, start: pd.Timestamp, end: pd.Timestamp) -> pd.Series:
+    token = os.getenv("ESIOS_TOKEN")
+    if not token:
+        raise EnvironmentError("Falta ESIOS_TOKEN en variables de entorno")
+    url = (
+        f"https://api.esios.ree.es/indicators/{ind}"
+        f"?start_date={start:%Y-%m-%dT%H:%M:%SZ}"
+        f"&end_date={end:%Y-%m-%dT%H:%M:%SZ}&time_trunc=hour"
+    )
+    headers = {
+        "x-api-key": token,
+        "Accept": "application/json; application/vnd.esios-api-v1+json",
+    }
+    r = requests.get(url, headers=headers, timeout=30)
+    r.raise_for_status()
+
+    vals = r.json()["indicator"].get("values", [])
+    if not vals:
+        idx = pd.date_range(start, end, freq="h", tz="UTC")
+        return pd.Series(index=idx, dtype="float32", name=str(ind))
+
+    df = pd.DataFrame(vals)
+    dt_col = next(c for c in ("datetime_utc", "datetime", "date") if c in df.columns)
+    ser = (
+        df[[dt_col, "value"]]
+          .assign(**{dt_col: lambda d: pd.to_datetime(d[dt_col], utc=True)})
+          .set_index(dt_col)["value"]
+          .astype("float32")
+    )
+    return ser
+
+
+def main(config: str) -> None:
+    cfg = load(config)
+    parquet_path = Path(cfg["paths"]["processed_dir"]) / "initial_dataset.parquet"
+
+    last = latest_time(parquet_path)
+    now = pd.Timestamp.utcnow().floor("h")
+    if last + timedelta(hours=1) > now:
+        print("Dataset ya al dÃ­a.")
+        return
+
+    start = last + timedelta(hours=1)
+    print(f"Actualizando datos ESIOS desde {start} hasta {now}")
+
+    # descarga incremental de ESIOS
+    series: list[pd.Series] = []
+    for col, ind in IDS_ESIOS.items():
+        s = fetch_esios(ind, start, now).rename(col)
+        series.append(s)
+
+    df_new = (
+        pd.concat(series, axis=1)
+          .reset_index()
+          .rename(columns={"index": "timestamp"})
+    )
+
+    # lee el parquet viejo y asegura columna timestamp
+    df_old = pd.read_parquet(parquet_path)
+    df_old = df_old.reset_index()
+    if "timestamp" not in df_old.columns:
+        df_old = df_old.rename(columns={"index": "timestamp"})
+
+    # une, elimina duplicados y ordena
+    df_full = pd.concat([df_old, df_new], axis=0, ignore_index=True)
+    df_full = (
+        df_full
+          .drop_duplicates(subset="timestamp", keep="last")
+          .sort_values("timestamp")
+    )
+
+    # guarda sin Ã­ndice
+    df_full.to_parquet(parquet_path, index=False)
+    print(f"âœ“ initial_dataset.parquet actualizado: ahora {len(df_full)} filas.")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "-c", "--config",
+        required=True,
+        help="Ruta al YAML de configuraciÃ³n"
+    )
+    args = parser.parse_args()
+    main(**vars(args))
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\src\data\__init__.py ###
+"""Data layer."""
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\src\features\build_features.py ###
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+Generador robusto de *features* para entrenamiento y predicciÃ³n.
+
+Novedades
+â”€â”€â”€â”€â”€â”€â”€â”€â”€
+â€¢ Variables cÃ­clicas hora / dÃ­a-aÃ±o, direcciÃ³n de viento, log_wind_speed.
+â€¢ InterpolaciÃ³n bidireccional solo en predictores exÃ³genos.
+â€¢ Mantiene filas siempre que los *targets* no sean NaN.
+"""
+from __future__ import annotations
+import argparse, logging, joblib
+from math import atan2, pi
+from pathlib import Path
+from typing import Iterable, Sequence
+
+from src.utils.capacity import build_capacity_series
+
+import numpy as np
+import pandas as pd
+import xarray as xr
+import yaml
+from pvlib.solarposition import get_solarposition
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
+LOG = logging.getLogger(__name__)
+
+DS_VAR_MAP = {
+    "10m_u_component_of_wind": "u10",
+    "10m_v_component_of_wind": "v10",
+    "2m_temperature":          "t2m",
+    "surface_solar_radiation_downwards": "ssrd",
+}
+
+# â”€â”€â”€â”€â”€ helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+def _derive_physical(df: pd.DataFrame) -> pd.DataFrame:
+    # mÃ³dulo y direcciÃ³n del viento 10 m
+    if {"u10", "v10"}.issubset(df.columns):
+        df["wind_speed"] = np.sqrt(df["u10"]**2 + df["v10"]**2)
+        df["wind_dir"]   = (np.degrees(np.arctan2(df["u10"], df["v10"])) + 360) % 360
+        df["log_wind_speed"] = np.log1p(df["wind_speed"])
+    return df
+
+def _add_solar_geom(df: pd.DataFrame, lat: float, lon: float) -> pd.DataFrame:
+    loc = df.index.tz_convert("Europe/Madrid")
+    sp  = get_solarposition(loc, latitude=lat, longitude=lon)
+    df["solar_zenith"]    = sp["zenith"].values
+    df["solar_elevation"] = sp["elevation"].values
+    df["is_day"]          = (df["solar_elevation"] > 0).astype("int8")
+    return df
+
+def _add_time_cyc(df: pd.DataFrame) -> pd.DataFrame:
+    hr   = df.index.hour
+    doy  = df.index.dayofyear
+    df["hour_sin"] = np.sin(2*pi*hr/24)
+    df["hour_cos"] = np.cos(2*pi*hr/24)
+    df["doy_sin"]  = np.sin(2*pi*doy/365)
+    df["doy_cos"]  = np.cos(2*pi*doy/365)
+    return df
+
+def _add_lags_rolls(df: pd.DataFrame, cols: Iterable[str],
+                    lags: Sequence[int], rolls: Sequence[int]) -> pd.DataFrame:
+    for c in cols:
+        if c not in df or not np.issubdtype(df[c].dtype, np.number):
+            continue
+        for k in lags:
+            df[f"{c}_lag{k}"] = df[c].shift(k)
+        for r in rolls:
+            df[f"{c}_roll{r}"] = df[c].rolling(r).mean()
+    return df
+
+def _add_split(df: pd.DataFrame, split_cfg: dict) -> pd.DataFrame:
+    tr_end = pd.to_datetime(split_cfg["train_end"], utc=True).tz_convert("Europe/Madrid")
+    va_end = pd.to_datetime(split_cfg["val_end"],   utc=True).tz_convert("Europe/Madrid")
+    df["split"] = np.where(df.index <= tr_end, "train",
+                    np.where(df.index <= va_end, "val", "test"))
+    return df
+
+def engineer_feature_matrix(ds: xr.Dataset, cfg: dict, *, future=True) -> pd.DataFrame:
+    rename = {o: n for o, n in DS_VAR_MAP.items() if o in ds}
+    ds = ds.rename(rename)
+
+    # 1) eje temporal Ãºnico
+    if "valid_time" in ds.coords:
+        ds = ds.swap_dims({"step": "valid_time"})
+    else:
+        vt = (ds["time"] + ds["step"]).data      # usar .data
+        ds = (ds.assign_coords(valid_time=("step", vt))
+                .swap_dims({"step": "valid_time"})
+                .drop_vars(["time", "step"]))
+
+    # 2) seleccionar grid-point representativo (â‰ˆ 40 N, 4 W)
+    ds = ds.sel(latitude=40.0, longitude=-4.0, method="nearest")
+
+    # 3) DataFrame base
+    df = ds.to_dataframe()
+    df.index = (pd.to_datetime(df.index)
+                  .tz_localize("UTC")
+                  .tz_convert("Europe/Madrid"))
+
+    # 4) derivadas
+    df["wind_speed"] = np.sqrt(df["u10"]**2 + df["v10"]**2)
+    df = _add_solar_geom(df, cfg["site"]["lat"], cfg["site"]["lon"])
+    df = _add_time_cyc(df)
+    fe = cfg["feature_engineering"]
+    df = _add_lags_rolls(df, fe["lag_roll_cols"], fe["lags"], fe["rolling_means"])
+
+    # 5) fase entrenamiento â†’ normalizar a CF
+    if not future:
+        from src.utils.capacity import build_capacity_series
+        caps = build_capacity_series(cfg["capacity_timeline"], df.index)
+        for tgt in cfg["model"]["targets"]:
+            df[tgt] = df[tgt] / caps[tgt]
+        df = df.dropna(subset=cfg["model"]["targets"])
+        num = df.select_dtypes(np.number).columns
+        df[num] = df[num].interpolate(limit_direction="both")
+    return df
+
+# â”€â”€â”€â”€â”€ construcciÃ³n offline â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+def _main(cfg_file: str, in_parquet: str, out_parquet: str) -> None:
+    cfg = yaml.safe_load(open(cfg_file, encoding="utf-8"))
+    df  = pd.read_parquet(in_parquet)
+    if "timestamp" in df.columns:
+        df = df.set_index(pd.to_datetime(df["timestamp"], utc=True))
+    if df.index.tz is None:
+        df = df.tz_localize("UTC")
+    df = df.tz_convert("Europe/Madrid").sort_index()
+
+    missing = [t for t in cfg["model"]["targets"] if t not in df]
+    if missing:
+        raise RuntimeError(f"Faltan targets {missing} en {in_parquet}")
+
+    df = _derive_physical(df)
+    df = _add_solar_geom(df, cfg["site"]["lat"], cfg["site"]["lon"])
+    df = _add_time_cyc(df)
+
+    exog = [c for c in df.select_dtypes(np.number).columns
+            if c not in cfg["model"]["targets"]]
+    fe = cfg["feature_engineering"]
+    df = _add_lags_rolls(df, exog, fe["lags"], fe["rolling_means"])
+
+    df = df.dropna(subset=cfg["model"]["targets"])
+    num = df.select_dtypes(np.number).columns
+    df[num] = df[num].interpolate(limit_direction="both")
+
+    # â€¦ despuÃ©s de montar `df`
+    caps = build_capacity_series(cfg["capacity_timeline"], df.index)
+    for tgt in cfg["model"]["targets"]:
+        df[tgt] = df[tgt] / caps[tgt]
+
+    df = _add_split(df, cfg["data"]["split_dates"])
+    Path(out_parquet).parent.mkdir(parents=True, exist_ok=True)
+    df.to_parquet(out_parquet)
+    joblib.dump(num.tolist(), Path(out_parquet).with_suffix(".pkl"))
+    LOG.info("âœ… Features â†’ %s  shape=%s", out_parquet, df.shape)
+
+if __name__ == "__main__":
+    p = argparse.ArgumentParser()
+    p.add_argument("-c", "--config", dest="cfg_file", required=True)
+    p.add_argument("--in",  dest="in_parquet",  required=True)
+    p.add_argument("--out", dest="out_parquet", required=True)
+    _main(**vars(p.parse_args()))
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\src\features\__init__.py ###
+"""Feature eng."""
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\src\models\baseline.py ###
+# src/models/baseline.py
+"""
+Persistencia 24 h para cada target (benchmark rÃ¡pido).
+Run:
+    python -m src.models.baseline --config configs/default.yaml
+Genera:
+    models/baseline/baseline_persist24.csv
+"""
+from __future__ import annotations
+import argparse
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+
+from src.utils.yaml_cfg import load
+
+
+def main(config: str):
+    cfg   = load(config)
+    df    = pd.read_parquet(cfg["paths"]["feature_table"])
+    test  = df.query("split == 'test'")
+    out_d = Path(cfg["paths"]["models"]) / "baseline"
+    out_d.mkdir(parents=True, exist_ok=True)
+
+    results = {}
+    for tgt in cfg["model"]["targets"]:
+        y_true = test[tgt]
+        y_pred = y_true.shift(24).reindex_like(y_true)
+
+        valid = y_true.notna() & y_pred.notna()          # filas sin NaN
+        if valid.sum() == 0:
+            print(f"[{tgt:<8}]  Sin datos vÃ¡lidos para persistencia-24 h")
+            continue
+
+        mae  = mean_absolute_error(y_true[valid], y_pred[valid])
+        rmse = np.sqrt(mean_squared_error(y_true[valid], y_pred[valid]))
+        nmae = mae / y_true[valid].mean()
+
+        print(f"[{tgt:<8}] Persist24h  MAE={mae:,.2f}  RMSE={rmse:,.2f}  nMAE={nmae:,.3f}")
+
+        results[f"{tgt}_obs"]  = y_true
+        results[f"{tgt}_pred"] = y_pred
+
+    pd.DataFrame(results).to_csv(out_d / "baseline_persist24.csv")
+
+
+if __name__ == "__main__":
+    p = argparse.ArgumentParser()
+    p.add_argument("-c", "--config", default="configs/default.yaml")
+    main(**vars(p.parse_args()))
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\src\models\evaluate.py ###
+#!/usr/bin/env python
+"""
+Evaluate a run (models/<run_id>/) on the test split and
+generate an HTML report with PNGs (Matplotlib, headless).
+"""
+
+from __future__ import annotations
+import argparse, logging, math
+from datetime import datetime
+from pathlib import Path
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import joblib, numpy as np, pandas as pd
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from src.utils.yaml_cfg import load
+
+logging.basicConfig(level=logging.INFO,
+                    format="%(asctime)s | %(levelname)s | %(message)s",
+                    datefmt="%H:%M:%S")
+LOG = logging.getLogger(__name__)
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+def metrics_dict(y, yhat):
+    mae  = mean_absolute_error(y, yhat)
+    rmse = math.sqrt(mean_squared_error(y, yhat))
+    nmae = mae / np.mean(np.abs(y))
+    mape = np.mean(np.abs((y - yhat) / y)) * 100
+    r2   = r2_score(y, yhat)
+    return dict(MAE=mae, RMSE=rmse, nMAE=nmae, MAPE=mape, R2=r2)
+
+def plot_scatter(y, yhat, path: Path, tgt: str):
+    plt.figure(figsize=(6, 4.5))
+    lims = [min(y.min(), yhat.min()), max(y.max(), yhat.max())]
+    plt.plot(lims, lims, "--", color="black", lw=1)
+    plt.scatter(y, yhat, s=18, alpha=0.7, c="royalblue")
+    plt.title(f"{tgt} â€“ Observed vs Predicted")
+    plt.xlabel("Observed"); plt.ylabel("Predicted")
+    plt.tight_layout(); plt.savefig(path, dpi=140); plt.close()
+
+def plot_residuals(resid, path: Path, tgt: str):
+    plt.figure(figsize=(6, 4))
+    plt.hist(resid, bins=40, color="indianred", alpha=0.8)
+    plt.axvline(resid.mean(), color="black", ls="--", lw=1)
+    plt.title(f"{tgt} â€“ Residual Histogram")
+    plt.xlabel("Residual"); plt.ylabel("Count")
+    plt.tight_layout(); plt.savefig(path, dpi=140); plt.close()
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ evaluate target â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+def evaluate_target(run_dir: Path, df_test: pd.DataFrame, tgt: str):
+    tgt_dir = run_dir / tgt
+    model  = joblib.load(tgt_dir / "model.joblib")
+    scaler = joblib.load(tgt_dir / "scaler.joblib")
+    feats  = joblib.load(tgt_dir / "features_used.pkl")
+
+    df_t = df_test.dropna(subset=feats + [tgt])
+    if df_t.empty:
+        LOG.warning("No test samples for %s â€“ skipped.", tgt)
+        return None
+
+    X = scaler.transform(df_t[feats])
+    y, yhat = df_t[tgt].values, model.predict(X)
+    resid = y - yhat
+    mets = metrics_dict(y, yhat)
+
+    scatter_png = tgt_dir / "obs_vs_pred.png"
+    resid_png   = tgt_dir / "residuals.png"
+    plot_scatter(y, yhat, scatter_png, tgt)
+    plot_residuals(resid, resid_png, tgt)
+
+    # ruta relativa para el HTML
+    scatter_rel = scatter_png.relative_to(run_dir).as_posix()
+    resid_rel   = resid_png.relative_to(run_dir).as_posix()
+
+    LOG.info("%s  MAE=%.2f  RMSE=%.2f  RÂ²=%.3f", tgt.upper(), mets["MAE"], mets["RMSE"], mets["R2"])
+    return dict(target=tgt, metrics=mets,
+                scatter=scatter_rel, resid=resid_rel)
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ HTML report â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+HEAD = """<!doctype html><html><head><meta charset="utf-8">
+<title>Evaluation {run}</title>
+<style>
+body{{font-family:Arial,Helvetica,sans-serif;margin:20px;background:#fafafa}}
+table{{border-collapse:collapse;margin-bottom:30px}}
+th,td{{border:1px solid #999;padding:6px 10px;text-align:right}}
+th{{background:#eee}}h2{{margin-top:40px}}
+img{{max-width:100%;height:auto;border:1px solid #ddd;margin-bottom:20px}}
+</style></head><body>
+<h1>Evaluation report: {run}</h1>
+<small>Generated: {ts}</small>"""
+FOOT = "</body></html>"
+
+def build_report(run_dir: Path, run: str, res):
+    html = HEAD.format(run=run,
+                       ts=datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"))
+    html += "<h2>Metrics (test split)</h2><table><tr><th>Target</th>"
+    for m in ["MAE", "RMSE", "nMAE", "MAPE", "R2"]:
+        html += f"<th>{m}</th>"
+    html += "</tr>"
+    for r in res:
+        html += f"<tr><td>{r['target']}</td>"
+        for m in ["MAE", "RMSE", "nMAE", "MAPE", "R2"]:
+            html += f"<td>{r['metrics'][m]:.3f}</td>"
+        html += "</tr>"
+    html += "</table>"
+    for r in res:
+        html += f"<h2>{r['target']}</h2>"
+        html += f"<img src='{r['scatter']}' alt='scatter'>"
+        html += f"<img src='{r['resid']}'   alt='residuals'>"
+    (run_dir / "report.html").write_text(html, encoding="utf-8")
+    LOG.info("Report saved to %s", run_dir / "report.html")
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ main CLI â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+def main(config: str, run: str):
+    cfg = load(config)
+    df = pd.read_parquet(cfg["paths"]["feature_table"])
+    df_test = df[df["split"] == "test"]
+    run_dir = Path(cfg["paths"]["models"]) / run
+
+    results = [r for tgt in cfg["model"]["targets"]
+               if (r := evaluate_target(run_dir, df_test, tgt))]
+    if results:
+        build_report(run_dir, run, results)
+    else:
+        LOG.error("No results generated â€“ check artefacts/data.")
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser()
+    ap.add_argument("-c", "--config", required=True)
+    ap.add_argument("-r", "--run",    required=True)
+    main(**vars(ap.parse_args()))
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\src\models\train_lgbm.py ###
+# src/models/train_lgbm.py
+"""
+Entrena LightGBM para cada target definido en configs/*.yaml
+â€¢ Optuna para hallar hiper-parÃ¡metros  â€¢  escalado z-score
+â€¢ Guarda modelo, scaler y best_params
+Run:
+    python -m src.models.train_lgbm --config configs/default.yaml
+"""
+from __future__ import annotations
+
+import argparse, json, logging, os
+from datetime import datetime
+from math import sqrt
+from pathlib import Path
+
+import joblib
+import numpy as np
+import optuna
+import pandas as pd
+import lightgbm as lgb
+from sklearn.metrics import mean_squared_error
+from sklearn.preprocessing import StandardScaler
+
+from src.utils.logger import init_logger
+from src.utils.yaml_cfg import load
+
+def rmse(y_true, y_pred):
+    # mean_squared_error sin squared arg, luego sqrt
+    mse = mean_squared_error(y_true, y_pred)
+    return sqrt(mse)
+
+RANDOM_SEED = 42
+np.random.seed(RANDOM_SEED)
+init_logger()
+_L = logging.getLogger(__name__)
+
+def _objective(trial, Xtr, ytr, Xval, yval):
+    params = {
+        "boosting_type": "gbdt",
+        "objective": "regression",
+        "metric": "rmse",
+        "n_jobs": os.cpu_count(),
+        "random_state": RANDOM_SEED,
+        "num_leaves": trial.suggest_int("num_leaves", 31, 512),
+        "learning_rate": trial.suggest_float("learning_rate", 1e-3, 0.3, log=True),
+        "feature_fraction": trial.suggest_float("feature_fraction", 0.5, 1.0),
+        "bagging_fraction": trial.suggest_float("bagging_fraction", 0.5, 1.0),
+        "bagging_freq": trial.suggest_int("bagging_freq", 1, 10),
+        "min_data_in_leaf": trial.suggest_int("min_data_in_leaf", 20, 100),
+        "lambda_l1": trial.suggest_float("lambda_l1", 1e-3, 10.0, log=True),
+        "lambda_l2": trial.suggest_float("lambda_l2", 1e-3, 10.0, log=True),
+        "n_estimators": trial.suggest_int("n_estimators", 100, 1000),
+    }
+    model = lgb.LGBMRegressor(**params)
+    model.fit(Xtr, ytr)
+    preds = model.predict(Xval)
+    return rmse(yval, preds)
+
+def train_one_target(df: pd.DataFrame, feats: list[str], target: str,
+                     cfg: dict, out_dir: Path) -> None:
+    _L.info("â–¶ Entrenando LightGBM para %s", target)
+    tr  = df.query("split=='train'").dropna(subset=feats + [target])
+    val = df.query("split=='val'").dropna(subset=feats + [target])
+
+    scaler = StandardScaler()
+    Xtr = scaler.fit_transform(tr[feats]);  ytr = tr[target].values
+    Xval= scaler.transform(val[feats]);   yval = val[target].values
+
+    study = optuna.create_study(
+        direction="minimize",
+        sampler=optuna.samplers.TPESampler(seed=RANDOM_SEED)
+    )
+    study.optimize(lambda t: _objective(t, Xtr, ytr, Xval, yval),
+                   n_trials=cfg["optuna"]["n_trials"])
+
+    best = study.best_params | {
+        "boosting_type": "gbdt",
+        "objective": "regression",
+        "metric": "rmse",
+        "n_jobs": os.cpu_count(),
+        "random_state": RANDOM_SEED,
+    }
+    booster = lgb.LGBMRegressor(**best)
+    booster.fit(
+        np.vstack([Xtr, Xval]),
+        np.hstack([ytr, yval])
+    )
+
+    tgt_dir = out_dir / target
+    tgt_dir.mkdir(parents=True, exist_ok=True)
+    joblib.dump(booster,    tgt_dir/"model.joblib")
+    joblib.dump(scaler,     tgt_dir/"scaler.joblib")
+    json.dump(best, (tgt_dir/"best_params.json").open("w"))
+    _L.info("âœ” Guardado LightGBM artefactos en %s", tgt_dir)
+
+def main(config: str):
+    cfg = load(config)
+    df  = pd.read_parquet(cfg["paths"]["feature_table"])
+    numeric = df.select_dtypes(include=[np.number]).columns.tolist()
+    feats   = [c for c in numeric if c not in (*cfg["model"]["targets"], "split")]
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M")
+    out_dir = Path(cfg["paths"]["models"]) / f"lgbm_{ts}"
+    for tgt in cfg["model"]["targets"]:
+        train_one_target(df, feats, tgt, cfg, out_dir)
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--config", "-c", required=True, help="ruta YAML")
+    main(**vars(ap.parse_args()))
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\src\models\train_mlp.py ###
+# src/models/train_mlp.py
+"""
+Entrena un MLPRegressor (scikit-learn) para cada target.
+â€¢ Entrenamiento rÃ¡pido sin Optuna  â€¢  escalado z-score
+â€¢ Guarda modelo y scaler
+Run:
+    python -m src.models.train_mlp --config configs/default.yaml
+"""
+from __future__ import annotations
+
+import argparse
+import logging
+import math
+from datetime import datetime
+from pathlib import Path
+
+import joblib
+import numpy as np
+import pandas as pd
+from sklearn.metrics import mean_squared_error, mean_absolute_error
+from sklearn.neural_network import MLPRegressor
+from sklearn.preprocessing import StandardScaler
+
+from src.utils.logger import init_logger
+from src.utils.yaml_cfg import load
+
+def rmse(y_true, y_pred):
+    mse = mean_squared_error(y_true, y_pred)  # sin squared arg
+    return math.sqrt(mse)
+
+init_logger()
+_L = logging.getLogger(__name__)
+
+def train_one_target(df: pd.DataFrame, feats: list[str], target: str,
+                     cfg: dict, out_dir: Path) -> None:
+    _L.info("â–¶ Entrenando MLP para %s", target)
+
+    # split y dropna
+    tr  = df.query("split=='train'").dropna(subset=feats + [target])
+    val = df.query("split=='val'").dropna(subset=feats + [target])
+
+    # escalado
+    scaler = StandardScaler()
+    Xtr = scaler.fit_transform(tr[feats]);  ytr = tr[target].values
+    Xval= scaler.transform(val[feats]);   yval= val[target].values
+
+    # modelo MLP sencillo
+    mlp = MLPRegressor(
+        hidden_layer_sizes=(100,100),
+        activation="relu",
+        solver="adam",
+        early_stopping=True,
+        n_iter_no_change=10,
+        max_iter=200,
+        random_state=42,
+    )
+    mlp.fit(Xtr, ytr)
+
+    # evaluaciÃ³n en validaciÃ³n
+    preds = mlp.predict(Xval)
+    mae = mean_absolute_error(yval, preds)
+    rm  = rmse(yval, preds)
+    r2  = None
+    try:
+        from sklearn.metrics import r2_score
+        r2 = r2_score(yval, preds)
+    except ImportError:
+        pass
+
+    _L.info("Resultados %s â†’ MAE: %.4f  RMSE: %.4f  R2: %s",
+           target, mae, rm, f"{r2:.4f}" if r2 is not None else "N/A")
+
+    # guardar artefactos
+    tgt_dir = out_dir / target
+    tgt_dir.mkdir(parents=True, exist_ok=True)
+    joblib.dump(mlp,    tgt_dir/"model.joblib")
+    joblib.dump(scaler, tgt_dir/"scaler.joblib")
+    _L.info("âœ” Guardado MLP artefactos en %s", tgt_dir)
+
+
+def main(config: str):
+    cfg = load(config)
+    df  = pd.read_parquet(cfg["paths"]["feature_table"])
+
+    # seleccionar solo numÃ©ricas
+    numeric = df.select_dtypes(include=[np.number]).columns.tolist()
+    feats   = [c for c in numeric if c not in (*cfg["model"]["targets"], "split")]
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M")
+    out_dir = Path(cfg["paths"]["models"]) / f"mlp_{ts}"
+    for tgt in cfg["model"]["targets"]:
+        train_one_target(df, feats, tgt, cfg, out_dir)
+
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--config", "-c", required=True, help="ruta YAML")
+    main(**vars(ap.parse_args()))
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\src\models\train_xgb.py ###
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+Entrena modelos XGBoost para cada *target* definido en el YAML.
+
+Salida:
+    models/xgb_<UTC-timestamp>/{wind,solar_pv}/
+        â”œâ”€ <target>.joblib          â† Pipeline (Scaler + XGBRegressor)
+        â”œâ”€ features_used.pkl        â† lista columnas numÃ©ricas de entrada
+
+Dependencias:
+    pip install xgboost scikit-learn pandas numpy joblib pyyaml
+"""
+from __future__ import annotations
+import argparse, logging
+from datetime import datetime, timezone
+from pathlib import Path
+
+import joblib
+import numpy as np
+import pandas as pd
+import yaml
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+from sklearn.model_selection import train_test_split
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+from xgboost import XGBRegressor
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+LOG = logging.getLogger(__name__)
+
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Utilidades ------------------------------------------------
+def load_cfg(path: str) -> dict:
+    return yaml.safe_load(open(path, encoding="utf-8"))
+
+
+def save_artifacts(pipe: Pipeline, feats: list[str], dst: Path, tgt: str) -> None:
+    dst.mkdir(parents=True, exist_ok=True)
+    joblib.dump(pipe,  dst / f"{tgt}.joblib")
+    joblib.dump(feats, dst / "features_used.pkl")
+
+
+def _ensure_splits(df: pd.DataFrame, tgt: str) -> pd.DataFrame:
+    """
+    Garantiza que existan filas `split=="train"` y `split=="val"`.
+    Si la columna 'split' no existe â€”o la secciÃ³n 'train' queda vacÃ­aâ€”
+    genera un *hold-out* 80 / 20 en orden temporal.
+    """
+    if "split" not in df.columns or df[df["split"] == "train"].empty:
+        LOG.warning("Creando splits 80/20 automÃ¡ticamente para Â«%sÂ».", tgt)
+        df = df.sort_index().copy()
+        train_idx, val_idx = train_test_split(
+            df.index, test_size=0.2, shuffle=False
+        )
+        df["split"] = "train"
+        df.loc[val_idx, "split"] = "val"
+    return df
+
+
+def train_one(df: pd.DataFrame, tgt: str, cfg: dict, out_dir: Path) -> None:
+    """Entrena y guarda el modelo para un *target*; compatible con scikit-learn <0.22."""
+    if tgt not in df.columns or df[tgt].dropna().empty:
+        LOG.error("âŒ  La columna Â«%sÂ» estÃ¡ vacÃ­a o ausente â†’ omitida.", tgt)
+        return
+
+    df = _ensure_splits(df.dropna(subset=[tgt]), tgt)
+    train, val = df[df["split"] == "train"], df[df["split"] == "val"]
+
+    feats = [c for c in df.select_dtypes(np.number).columns
+             if c not in cfg["model"]["targets"]]
+    if not feats or train.empty or val.empty:
+        LOG.error("âŒ  Split o features vacÃ­os para Â«%sÂ» â†’ omitido.", tgt)
+        return
+
+    Xtr, ytr = train[feats], train[tgt]
+    Xva, yva = val[feats],   val[tgt]
+
+    pipe = Pipeline([
+        ("scale", StandardScaler()),
+        ("xgb",   XGBRegressor(
+            n_estimators=400,
+            learning_rate=0.05,
+            max_depth=6,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            objective="reg:squarederror",
+            tree_method="hist",
+            n_jobs=-1,
+            random_state=42,
+        )),
+    ])
+    pipe.fit(Xtr, ytr)
+
+    pred  = pipe.predict(Xva)
+    mae   = mean_absolute_error(yva, pred)
+    rmse  = np.sqrt(mean_squared_error(yva, pred))   # â† sin squared=False
+    LOG.info("âœ“  %s | MAE %.3f | RMSE %.3f | train=%d | val=%d",
+             tgt, mae, rmse, len(Xtr), len(Xva))
+
+    save_artifacts(pipe, feats, out_dir / tgt, tgt)
+
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Main ------------------------------------------------------
+def main(cfg_path: str) -> None:
+    cfg = load_cfg(cfg_path)
+    df  = pd.read_parquet(cfg["paths"]["feature_table"])
+
+    ts  = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
+    out = Path(cfg["paths"]["models"]) / f"xgb_{ts}"
+
+    for tgt in cfg["model"]["targets"]:
+        LOG.info("Entrenando modelo para Â«%sÂ» â€¦", tgt)
+        train_one(df.copy(), tgt, cfg, out)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-c", "--config", required=True,
+                        help="configs/default.yaml")
+    main(parser.parse_args().config)
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\src\models\train_xgb_optuna.py ###
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+Entrena un XGBoost por objetivo usando solo variables exÃ³genas
+(NWP + rasgos horarios) cuyo target ya estÃ¡ en *capacity factor* (0-1).
+
+â€¢ BÃºsqueda de hiper-parÃ¡metros con Optuna (nMAE).
+â€¢ ValidaciÃ³n temporal con TimeSeriesSplit.
+"""
+from __future__ import annotations
+import argparse, logging, yaml, joblib
+from datetime import datetime, timezone
+from pathlib import Path
+
+import numpy as np
+import optuna
+import pandas as pd
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+from sklearn.model_selection import TimeSeriesSplit
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+from xgboost import XGBRegressor
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+LOG = logging.getLogger(__name__)
+
+
+# â”€â”€â”€â”€â”€ utils â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+def load_cfg(p: str) -> dict:
+    return yaml.safe_load(open(p, encoding="utf-8"))
+
+
+# â”€â”€â”€â”€â”€ Optuna objective â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+def make_objective(X: pd.DataFrame, y: pd.Series, splits: int):
+    cv = TimeSeriesSplit(n_splits=splits, test_size=len(X) // (splits + 1))
+
+    def objective(trial: optuna.Trial) -> float:
+        params = {
+            "n_estimators": trial.suggest_int("n_estimators", 400, 1200),
+            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.15, log=True),
+            "max_depth": trial.suggest_int("max_depth", 4, 10),
+            "subsample": trial.suggest_float("subsample", 0.5, 1.0),
+            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
+            "min_child_weight": trial.suggest_int("min_child_weight", 1, 10),
+            "gamma": trial.suggest_float("gamma", 0, 5),
+            "reg_lambda": trial.suggest_float("reg_lambda", 0, 10),
+            "reg_alpha": trial.suggest_float("reg_alpha", 0, 5),
+            "objective": "reg:squarederror",
+            "tree_method": "hist",
+            "n_jobs": -1,
+            "random_state": 42,
+        }
+        scores = []
+        for tr_idx, val_idx in cv.split(X):
+            pipe = Pipeline([
+                ("sc", StandardScaler()),
+                ("xgb", XGBRegressor(**params)),
+            ])
+            pipe.fit(X.iloc[tr_idx], y.iloc[tr_idx])
+            pred = pipe.predict(X.iloc[val_idx])
+            scores.append(mean_absolute_error(y.iloc[val_idx], pred))
+        return np.mean(scores)
+    return objective
+
+
+def train_final_model(X: pd.DataFrame, y: pd.Series, params: dict) -> Pipeline:
+    pipe = Pipeline([
+        ("sc", StandardScaler()),
+        ("xgb", XGBRegressor(**params)),
+    ])
+    pipe.fit(X, y)
+    return pipe
+
+
+# â”€â”€â”€â”€â”€ main â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+def main(cfg_path: str) -> None:
+    cfg = load_cfg(cfg_path)
+    df = pd.read_parquet(cfg["paths"]["feature_table"])
+    numf = pd.read_pickle(cfg["paths"]["feature_table"].replace(".parquet", ".pkl"))
+
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
+    out_root = Path(cfg["paths"]["models"]) / f"xgb_optuna_{ts}"
+
+    for tgt in cfg["model"]["targets"]:
+        LOG.info("âš™ï¸  Optimizando Â«%sÂ» â€¦", tgt)
+        y = df[tgt]                     # ya es capacity factor 0-1
+        X = df[numf]
+
+        study = optuna.create_study(direction="minimize")
+        study.optimize(make_objective(X, y, splits=5),
+                       n_trials=cfg["optuna"]["n_trials"])
+        best = study.best_params
+        LOG.info("â†’ Mejor parÃ¡metro nMAE=%.4f  %s", study.best_value, best)
+
+        model = train_final_model(X, y, best)
+
+        # mÃ©tricas en periodo de validaciÃ³n (cfg.data.split_dates.val_end)
+        val_mask = df["split"] == "val"
+        pred = model.predict(X[val_mask])
+        mae = mean_absolute_error(y[val_mask], pred)
+        rmse = np.sqrt(mean_squared_error(y[val_mask], pred))
+        LOG.info("âœ“ %s | nMAE %.4f | nRMSE %.4f", tgt, mae, rmse)
+
+        dst = out_root / tgt
+        dst.mkdir(parents=True, exist_ok=True)
+        joblib.dump(model, dst / f"{tgt}.joblib")
+        joblib.dump(numf, dst / "features_used.pkl")
+        yaml.safe_dump(best, open(dst / "best_params.yaml", "w"))
+
+    LOG.info("ðŸ Modelos guardados en %s", out_root)
+
+
+if __name__ == "__main__":
+    p = argparse.ArgumentParser()
+    p.add_argument("-c", "--config", required=True)
+    main(p.parse_args().config)
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\src\models\__init__.py ###
+"""ML models."""
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\src\prediction\predict.py ###
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+PronÃ³stico horario a 7 dÃ­as a partir del Ãºltimo IFS-HRES (0.25Â°).
+â€¢ Guarda CSV + JSON + informe Plotly en:
+  outputs/<run>/<model_name>/
+"""
+
+from __future__ import annotations
+import argparse, logging, sys
+from pathlib import Path
+
+import joblib
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+import plotly.io as pio
+import xarray as xr
+from pvlib.solarposition import get_solarposition
+
+from src.features.build_features import engineer_feature_matrix
+from src.utils.capacity import build_capacity_series
+from src.utils.yaml_cfg import load
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+LOG = logging.getLogger("predict")
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€ helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+def _latest_file(folder: Path) -> Path:
+    nc = sorted(p for p in folder.glob("ifs_hres_*.nc") if ".idx" not in p.suffixes)
+    g2 = sorted(folder.glob("ifs_hres_*.grib2"))
+    if nc:
+        return nc[-1]
+    if g2:
+        return g2[-1]
+    raise FileNotFoundError("No ifs_hres_*.nc / *.grib2 en data/raw/hres")
+
+
+def _open_nwp(path: Path) -> xr.Dataset:
+    """Abre NetCDF pseudo-GRIB o GRIB2 y fusiona u10,v10,t2m,ssrd."""
+    try:
+        if path.suffix == ".nc":
+            return xr.open_dataset(path, engine="netcdf4")
+    except Exception as e_nc:  # noqa: BLE001
+        LOG.debug("netcdf4 fallÃ³ â†’ cfgrib (%s)", e_nc)
+
+    def _load(short: str) -> xr.Dataset:
+        return xr.open_dataset(
+            path,
+            engine="cfgrib",
+            backend_kwargs={
+                "filter_by_keys": {"shortName": short},
+                "indexpath": "",
+            },
+        ).drop_vars("heightAboveGround", errors="ignore")
+
+    return xr.merge([_load(s) for s in ("10u", "10v", "2t", "ssrd")],
+                    compat="override")
+
+
+def _postprocess(pred: pd.DataFrame, cfg: dict) -> pd.DataFrame:
+    """Reescala CFâ†’MW con capacidad dinÃ¡mica y PV nocturno = 0."""
+    caps = build_capacity_series(cfg["capacity_timeline"], pred.index)
+    pred["wind"]      *= caps["wind"]
+    pred["solar_pv"]  *= caps["solar_pv"]
+
+    elev = get_solarposition(pred.index.tz_convert("Europe/Madrid"),
+                             cfg["site"]["lat"], cfg["site"]["lon"])["elevation"]
+    pred.loc[elev <= 0, "solar_pv"] = 0.0
+    return pred
+
+
+def _save_report(pred: pd.DataFrame, out_dir: Path) -> None:
+    """Genera informe Plotly interactivo (HTML)."""
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=pred.index, y=pred["wind"],
+        mode="lines", name="Wind (MW)"))
+    fig.add_trace(go.Scatter(
+        x=pred.index, y=pred["solar_pv"],
+        mode="lines", name="Solar PV (MW)"))
+
+    fig.update_layout(
+        title="7-Day Ahead Power Forecast",
+        xaxis_title="Time (Europe/Madrid)",
+        yaxis_title="Power (MW)",
+        template="plotly_white",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                    xanchor="right", x=1),
+        margin=dict(l=40, r=40, t=60, b=40),
+    )
+    pio.write_html(fig, file=str(out_dir / "forecast_report.html"),
+                   auto_open=False)
+
+
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€ main â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+def main(cfg_path: str) -> None:
+    cfg = load(cfg_path)
+
+    hres_dir  = Path(cfg["paths"].get("hres_dir", "data/raw/hres"))
+    model_dir = Path(cfg["paths"]["best_model_dir"])
+    outputs   = Path(cfg["paths"].get("outputs", "outputs"))
+
+    nwp_file = _latest_file(hres_dir)
+    LOG.info("Usando NWP %s", nwp_file.name)
+    ds = _open_nwp(nwp_file)
+
+    targets   = cfg["model"]["targets"]
+    feat_used = joblib.load(model_dir / targets[0] / "features_used.pkl")
+    models    = {t: joblib.load(model_dir / t / f"{t}.joblib") for t in targets}
+
+    feats_all = engineer_feature_matrix(ds, cfg, future=True)
+    feats = feats_all.reindex(columns=feat_used, fill_value=0.0)
+
+    preds = pd.DataFrame({t: m.predict(feats) for t, m in models.items()},
+                         index=feats.index)
+    preds = _postprocess(preds, cfg)
+
+    run = pd.Timestamp.utcnow().strftime("%Y%m%d%H")
+    out_dir = outputs / run / model_dir.name
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    preds.to_csv(out_dir / "forecast_7d.csv")
+    preds.to_json(out_dir / "forecast_7d.json",
+                  orient="table", date_format="iso")
+    _save_report(preds, out_dir)
+
+    LOG.info("PronÃ³stico e informe guardados â†’ %s", out_dir)
+
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser()
+    ap.add_argument("-c", "--config", required=True)
+    try:
+        main(ap.parse_args().config)
+    except Exception as exc:          # noqa: BLE001
+        LOG.error("âŒ  %s", exc)
+        sys.exit(1)
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\src\utils\capacity.py ###
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+Genera una serie horaria de capacidad instalada (MW) interpolada
+hacia delante, compatible con Ã­ndices con o sin zona horaria.
+"""
+
+from __future__ import annotations
+import pandas as pd
+
+
+def _to_naive(idx: pd.DatetimeIndex) -> pd.DatetimeIndex:
+    """Devuelve el mismo Ã­ndice sin informaciÃ³n de zona horaria."""
+    return idx.tz_localize(None) if idx.tz is not None else idx
+
+
+def build_capacity_series(timeline: dict[str, dict[str, float]],
+                          index: pd.DatetimeIndex) -> pd.DataFrame:
+    """
+    Parameters
+    ----------
+    timeline : {tech: {iso-date: capacity_MW}}
+    index    : DatetimeIndex (posiblemente tz-aware)
+
+    Returns
+    -------
+    DataFrame con columnas = tecnologÃ­as, Ã­ndice = `index`,
+    valores ffill sobre la capacidad.
+    """
+    idx_naive = _to_naive(index)
+    caps = {}
+    for tech, pts in timeline.items():
+        s = pd.Series({pd.to_datetime(k): v for k, v in pts.items()}).sort_index()
+        caps[tech] = s.reindex(idx_naive, method="ffill").values
+    out = pd.DataFrame(caps, index=index)          # conserva zona horaria original
+    return out
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\src\utils\logger.py ###
+"""Standardised logger."""
+import logging, sys
+FORMAT = "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
+def init_logger(level: int = logging.INFO) -> None:
+    logging.basicConfig(level=level, format=FORMAT,
+                        handlers=[logging.StreamHandler(sys.stdout)])
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\src\utils\numpy_patch.py ###
+# src/utils/numpy_patch.py
+"""
+Compatibilidad NumPy â‰¥2.0 para librerÃ­as que aÃºn llaman np.obj2sctype.
+Debe importarse *antes* de importar esas librerÃ­as (p.ej. shap).
+"""
+import numpy as np
+
+if not hasattr(np, "obj2sctype"):
+    def _obj2sctype(obj):
+        """Retorna dtype equivalente; fallback a object_."""
+        try:
+            return np.dtype(obj).type
+        except Exception:
+            return np.object_
+    np.obj2sctype = _obj2sctype
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\src\utils\yaml_cfg.py ###
+# src/utils/yaml_cfg.py
+from __future__ import annotations
+from pathlib import Path
+import yaml
+
+def load(cfg_path: str | Path) -> dict:
+    """Carga YAML usando UTF-8 (windows-safe)."""
+    cfg_path = Path(cfg_path)
+    text = cfg_path.read_text(encoding="utf-8")
+    return yaml.safe_load(text)
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\src\utils\__init__.py ###
+"""Shared utilities."""
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\tests\test_esios_client.py ###
+
+# MIT Â© 2025 MSc Candidate
+"""Unit test for EsiosClient using responses to mock HTTP."""
+import json
+from datetime import datetime, timezone
+
+import pandas as pd
+import pytest
+import responses
+
+from src.data.esios_client import EsiosClient
+
+
+@responses.activate
+def test_fetch_series():
+    start = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    end = datetime(2024, 1, 1, 1, tzinfo=timezone.utc)
+    sample = {
+        "data": [
+            {
+                "attributes": {
+                    "datetime": "2024-01-01T00:00:00Z",
+                    "value": 500,
+                }
+            },
+            {
+                "attributes": {
+                    "datetime": "2024-01-01T01:00:00Z",
+                    "value": 600,
+                }
+            },
+        ],
+        "links": {"next": None},
+    }
+    responses.add(
+        responses.GET,
+        "https://api.esios.ree.es/archives/75",
+        json=sample,
+        status=200,
+    )
+
+    client = EsiosClient(token="dummy")
+    df = client.fetch_series(start, end, technology="wind")
+    assert isinstance(df, pd.DataFrame)
+    assert df["mw"].iloc[0] == 500
+
+### C:\Users\Vicente Collado\Desktop\Master Thesis\XGBoost\renewable-forecasting-pipeline\tests\test_split.py ###
+
+# MIT Â© 2025 MSc Candidate
+"""Verify there is no temporal leakage between splits."""
+import pandas as pd
+from src.features.build_features import main as build_main
+
+def test_split(tmp_path, monkeypatch):
+    # minimal dummy config
+    cfg_file = tmp_path / "cfg.yaml"
+    cfg_file.write_text(
+        """
+paths:
+  processed_dir: tests
+  feature_table: tests/feat.parquet
+data:
+  split:
+    train_end: "2020-12-31T23:00:00+01:00"
+    val_end: "2021-12-31T23:00:00+01:00"
+feature_engineering:
+  lags: [1]
+  rolling_means: []
+"""
+    )
+    # create dummy dataset
+    idx = pd.date_range("2020-01-01", periods=10, freq="H", tz="Europe/Madrid")
+    df = pd.DataFrame({"wind": range(10)}, index=idx)
+    df.to_parquet("tests/dataset.parquet")
+
+    build_main(str(cfg_file))
+    df_feat = pd.read_parquet("tests/feat.parquet")
+    assert set(df_feat["split"].unique()) == {"train", "val", "test"}
+

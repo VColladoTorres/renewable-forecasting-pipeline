@@ -1,0 +1,1 @@
+{"n_estimators": 1438, "eta": 0.04757264734865017, "max_depth": 7, "subsample": 0.6748631645038955, "colsample_bytree": 0.9156764304763463, "lambda": 0.6444122622822523, "alpha": 0.0003663147564911169, "objective": "reg:squarederror", "tree_method": "hist", "random_state": 42, "n_jobs": 16}

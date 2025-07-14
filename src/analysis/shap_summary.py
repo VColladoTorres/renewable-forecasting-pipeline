@@ -10,11 +10,10 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-# ---- parches --------------------------------------------------------------
-from src.utils.numpy_patch import *        # np.obj2sctype para NumPy ≥2.0
+# Parche para NumPy ≥2.0
+from src.utils.numpy_patch import *
 import matplotlib
-matplotlib.use("Agg")                      # backend sin GUI
-# ---------------------------------------------------------------------------
+matplotlib.use("Agg")  # backend sin GUI
 
 import matplotlib.pyplot as plt
 import joblib
@@ -27,7 +26,9 @@ def main(config: str, run: str) -> None:
     cfg   = load(config)
     df    = pd.read_parquet(cfg["paths"]["feature_table"])
     test  = df.query("split == 'test'")
-    feats = [c for c in df.columns if c not in (*cfg["model"]["targets"], "split")]
+    # Solo features numéricas, excluyendo targets y split
+    numeric = df.select_dtypes(include=[float, int]).columns.tolist()
+    feats   = [c for c in numeric if c not in (*cfg["model"]["targets"], "split")]
 
     out_dir = Path(cfg["paths"]["models"]) / run / "shap"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -40,7 +41,7 @@ def main(config: str, run: str) -> None:
         X_test = scaler.transform(test[feats])
 
         explainer = shap.TreeExplainer(model)
-        shap_vals = explainer.shap_values(X_test, check_additivity=False)  # ← clave
+        shap_vals = explainer.shap_values(X_test, check_additivity=False)
 
         shap.summary_plot(
             shap_vals,

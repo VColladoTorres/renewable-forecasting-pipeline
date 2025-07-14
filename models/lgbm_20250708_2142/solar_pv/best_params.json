@@ -1,0 +1,1 @@
+{"num_leaves": 416, "learning_rate": 0.07093812272415742, "feature_fraction": 0.6179361968428426, "bagging_fraction": 0.5054945946218856, "bagging_freq": 7, "min_data_in_leaf": 71, "lambda_l1": 0.2562663581869795, "lambda_l2": 9.880762982476792, "n_estimators": 422, "boosting_type": "gbdt", "objective": "regression", "metric": "rmse", "n_jobs": 16, "random_state": 42}

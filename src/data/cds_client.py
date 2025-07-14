@@ -62,12 +62,14 @@ class CDSClient:
         return paths
 
     # --------------------------- interno -----------------------------
+    # CAMBIO: versión robusta con verificación de tamaño/validez y salto si ya existe
     def _download_one(
-        self,
-        spec: Dict[str, str],
-        start: datetime,
-        end: datetime,
+            self,
+            spec: Dict[str, str],
+            start: datetime,
+            end: datetime,
     ) -> List[Path]:
+        """Descarga un conjunto ERA5 mensual y devuelve las rutas resultantes."""
         months = _month_stubs(start, end)
         out_files: list[Path] = []
 
@@ -75,18 +77,23 @@ class CDSClient:
             year, month = ym.split("-")
             fn = self._home / spec["name"] / f"{ym}.nc"
 
+            # ── 1. Omitir si el archivo ya existe y es válido (>0 B y NetCDF legible) ──
             if fn.exists():
-                _LOGGER.info("✓ %s existe – omitido", fn.name)
-                out_files.append(fn)
-                continue
+                if fn.stat().st_size > 0 and _is_netcdf_ok(fn):
+                    _LOGGER.info("✓ %s existe (%.1f MB) – omitido", fn.name, fn.stat().st_size / 1e6)
+                    out_files.append(fn)
+                    continue
+                _LOGGER.warning("%s existente incompleto/corrupto – se vuelve a descargar", fn.name)
+                fn.unlink(missing_ok=True)
 
             _LOGGER.info("ERA5 %s %s – descarga…", spec["name"], ym)
             fn.parent.mkdir(parents=True, exist_ok=True)
 
-            # ----------- request ------------------------------------
+            # ── 2. Construcción de la petición ───────────────────────────────────────
             n_days = calendar.monthrange(int(year), int(month))[1]
             req = {
-                "product_type": "reanalysis",
+                # product_type puede venir en el YAML; si no, se fija a 'reanalysis'
+                "product_type": spec.get("product_type", "reanalysis"),
                 "variable": [spec["short_name"]],
                 "year": year,
                 "month": month,
@@ -103,15 +110,14 @@ class CDSClient:
             req |= spec.get("extras", {})
             _LOGGER.debug("REQUEST JSON →\n%s", json.dumps(req, indent=2))
 
-            # ------------------ descarga con manejo de errores ------------------
+            # ── 3. Descarga con manejo de errores ────────────────────────────────────
             try:
                 self._c.retrieve(spec["dataset"], req, str(fn))
             except HTTPError as e:
-                # El cuerpo del 400 suele traer la clave 'error' con detalle
                 _LOGGER.error("CDS 400 Bad Request (%s):\n%s", spec["name"], e.response.text)
                 raise
 
-            # ------------------ validación rápida ------------------------------
+            # ── 4. Validación rápida ────────────────────────────────────────────────
             if not _is_netcdf_ok(fn):
                 _LOGGER.warning("%s corrupto → reintento 1/1", fn.name)
                 fn.unlink(missing_ok=True)

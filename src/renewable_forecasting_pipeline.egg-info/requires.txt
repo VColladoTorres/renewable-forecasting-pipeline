@@ -1,0 +1,16 @@
+pandas>=2.2
+numpy>=1.26
+python-dotenv>=1.0
+requests>=2.32
+cdsapi>=0.6
+xgboost>=2.0
+scikit-learn>=1.4
+optuna>=3.6
+joblib>=1.4
+matplotlib>=3.9
+pyyaml>=6.0
+ruff>=0.4
+tqdm>=4.66
+xarray>=2024.2
+netCDF4>=1.6
+scipy>=1.13

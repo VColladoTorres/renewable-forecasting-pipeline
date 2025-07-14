@@ -1,0 +1,19 @@
+
+<!doctype html>
+<html lang="es"><head>
+<meta charset="utf-8">
+<title>Informe de evaluación</title>
+<style>
+body{font-family:Arial,Helvetica,sans-serif;margin:20px;background:#fafafa}
+table{border-collapse:collapse;margin-bottom:20px}
+th,td{border:1px solid #999;padding:6px 10px;text-align:right}
+th{background:#eee}
+h2{margin-top:40px}
+img{max-width:100%;height:auto;border:1px solid #ddd;margin-bottom:20px}
+</style></head><body>
+<h1>Informe de evaluación: mlp_20250709_1100</h1>
+<h2>Métricas de validación</h2><table><tr><th>Target</th><th>MAE</th><th>RMSE</th><th>nMAE</th><th>MAPE</th><th>R2</th></tr>
+<tr><td>wind</td><td>1318.305</td><td>1753.022</td><td>0.018</td><td>3.292</td><td>0.999</td></tr>
+<tr><td>solar_pv</td><td>3395.498</td><td>6157.530</td><td>0.049</td><td>63.999</td><td>0.995</td></tr>
+<tr><td>demand</td><td>3419.798</td><td>4644.383</td><td>0.011</td><td>1.684</td><td>0.996</td></tr>
+</table><h2>wind</h2><img src='wind_obs_vs_pred.png' alt='Scatter wind'/><img src='wind_resid_hist.png' alt='Residuos wind'/><h2>solar_pv</h2><img src='solar_pv_obs_vs_pred.png' alt='Scatter solar_pv'/><img src='solar_pv_resid_hist.png' alt='Residuos solar_pv'/><h2>demand</h2><img src='demand_obs_vs_pred.png' alt='Scatter demand'/><img src='demand_resid_hist.png' alt='Residuos demand'/></body></html>

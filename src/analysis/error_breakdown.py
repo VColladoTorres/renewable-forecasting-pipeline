@@ -37,14 +37,12 @@ def pred_for_target(run_dir: Path, tgt: str, test_df: pd.DataFrame, feats: list[
 
 
 def _ensure_tz(idx: pd.DatetimeIndex) -> pd.DatetimeIndex:
-    """Garantiza que el índice tiene zona horaria UTC y luego lo convierte a Europe/Madrid."""
     if idx.tz is None:
         idx = idx.tz_localize("UTC")
     return idx.tz_convert("Europe/Madrid")
 
 
 def group_key(df: pd.DataFrame, group: str) -> pd.Series:
-    """Clave de agrupación devuelta como Series."""
     if group == "hour":
         hours = _ensure_tz(df.index).hour
         return pd.Series(hours, index=df.index, name="group")
@@ -68,7 +66,10 @@ def breakdown(config: str, run: str, group: str) -> None:
     run_dir  = Path(cfg["paths"]["models"]) / run
     df       = pd.read_parquet(cfg["paths"]["feature_table"])
     test_df  = df.query("split == 'test'").copy()
-    feat_cols = [c for c in test_df.columns if c not in (*cfg["model"]["targets"], "split")]
+
+    # Solo features numéricas, excluyendo targets y split
+    numeric_cols = test_df.select_dtypes(include=[np.number]).columns.tolist()
+    feat_cols    = [c for c in numeric_cols if c not in (*cfg["model"]["targets"], "split")]
 
     out_dir = run_dir / "diagnostics"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -98,6 +99,7 @@ def breakdown(config: str, run: str, group: str) -> None:
         plt.tight_layout()
         plt.savefig(out_dir / f"{tgt}_{group}_rmse.png", dpi=150)
         plt.close()
+
         print(f"  Guardado {csv_path}")
 
 
