@@ -5,9 +5,8 @@ __pycache__/
 .env                # tokens y claves API
 
 # ▸ Datos
-data/raw/           # NetCDF y otros brutos
-data/interim/
-data/processed/*.parquet
+data/
+!data/.gitkeep   # opcional: deja un marcador vacío
 outputs/
 models/*.joblib
 models/*/*.joblib
