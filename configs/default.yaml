@@ -40,7 +40,6 @@ variables:
        name: total_sky_direct_solar_radiation_at_surface,    short_name: fdir,
        area: [46,-10,27,4], grid: [0.25,0.25], data_format: netcdf}
 
-    # CORREGIDO: Añadida la 's' final a 'downwards'
     - {dataset: reanalysis-era5-single-levels, product_type: reanalysis,
        name: surface_solar_radiation_downwards_clear_sky,    short_name: ssrdc,
        area: [46,-10,27,4], grid: [0.25,0.25], data_format: netcdf}
@@ -65,13 +64,13 @@ variables:
        name: 10m_v_component_of_wind,                        short_name: 10v,
        area: [46,-10,27,4], grid: [0.25,0.25], data_format: netcdf}
 
-    - {dataset: reanalysis-era5-single-levels, product_type: reanalysis,
-       name: 100m_u_component_of_wind,                       short_name: 100u,
-       area: [46,-10,27,4], grid: [0.25,0.25], data_format: netcdf}
+    #- {dataset: reanalysis-era5-single-levels, product_type: reanalysis,
+    #   name: 100m_u_component_of_wind,                       short_name: 100u,
+    #   area: [46,-10,27,4], grid: [0.25,0.25], data_format: netcdf}
 
-    - {dataset: reanalysis-era5-single-levels, product_type: reanalysis,
-       name: 100m_v_component_of_wind,                       short_name: 100v,
-       area: [46,-10,27,4], grid: [0.25,0.25], data_format: netcdf}
+    #- {dataset: reanalysis-era5-single-levels, product_type: reanalysis,
+    #   name: 100m_v_component_of_wind,                       short_name: 100v,
+    #   area: [46,-10,27,4], grid: [0.25,0.25], data_format: netcdf}
 
     - {dataset: reanalysis-era5-single-levels, product_type: reanalysis,
        name: total_cloud_cover,                              short_name: tcc,
